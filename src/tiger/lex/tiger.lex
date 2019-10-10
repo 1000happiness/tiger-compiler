@@ -66,10 +66,88 @@
   * skip white space chars.
   * space, tabs and LF
   */
-[ \t]+ {adjust();}
-\n {adjust(); errormsg.Newline();}
+
+<INITIAL> [ \t]+ {adjust();}
+<INITIAL> "\n" {adjust(); errormsg.Newline();}
 
  /* reserved words */
-"array" {adjust(); return Parser::ARRAY;}
+<INITIAL> "var" {adjust(); return Parser::VAR;}
+<INITIAL> "type" {adjust(); return Parser::TYPE;}
+<INITIAL> "let" {adjust(); return Parser::LET;}
+<INITIAL> "in" {adjust(); return Parser::IN;}
+<INITIAL> "end" {adjust(); return Parser::END;}
+<INITIAL> "array" {adjust(); return Parser::ARRAY;}
+<INITIAL> "of" {adjust(); return Parser::OF;}
+<INITIAL> "function" {adjust(); return Parser::FUNCTION;}
+<INITIAL> "if" {adjust(); return Parser::IF;}
+<INITIAL> "then" {adjust(); return Parser::THEN;}
+<INITIAL> "else" {adjust(); return Parser::ELSE;}
+<INITIAL> "nil" {adjust(); return Parser::NIL;}
+<INITIAL> "do" {adjust(); return Parser::DO;}
+<INITIAL> "while" {adjust(); return Parser::WHILE;}
+<INITIAL> "for" {adjust(); return Parser::FOR;}
+<INITIAL> "to" {adjust(); return Parser::TO;}
 
-. {adjust(); errormsg.Error(errormsg.tokPos, "illegal token");}
+ /* OPERATION */
+<INITIAL> "+" {adjust(); return Parser::PLUS;}
+<INITIAL> "-" {adjust(); return Parser::MINUS;}
+<INITIAL> "*" {adjust(); return Parser::TIMES;}
+<INITIAL> "/" {adjust(); return Parser::DIVIDE;}
+<INITIAL> "=" {adjust(); return Parser::EQ;}
+<INITIAL> ":=" {adjust(); return Parser::ASSIGN;}
+<INITIAL> ">" {adjust(); return Parser::GT;}
+<INITIAL> "<" {adjust(); return Parser::LT;}
+<INITIAL> ">=" {adjust(); return Parser::GE;}
+<INITIAL> "<=" {adjust(); return Parser::LE;}
+<INITIAL> "<>" {adjust(); return Parser::NEQ;}
+<INITIAL> "&" {adjust(); return Parser::AND;}
+<INITIAL> "|" {adjust(); return Parser::OR;}
+
+
+/* Separater */
+<INITIAL> "." {adjust(); return Parser::DOT;}
+<INITIAL> ":" {adjust(); return Parser::COLON;}
+<INITIAL> "," {adjust(); return Parser::COMMA;}
+<INITIAL> ";" {adjust(); return Parser::SEMICOLON;}
+<INITIAL> "(" {adjust(); return Parser::LPAREN;}
+<INITIAL> ")" {adjust(); return Parser::RPAREN;}
+<INITIAL> "[" {adjust(); return Parser::LBRACK;}
+<INITIAL> "]" {adjust(); return Parser::RBRACK;}
+<INITIAL> "{" {adjust(); return Parser::LBRACE;}
+<INITIAL> "}" {adjust(); return Parser::RBRACE;}
+
+ /* ID AND INT */
+<INITIAL> [a-z|A-Z][a-z|A-Z|0-9|_]* {adjust(); return Parser::ID;}
+<INITIAL> [0-9]+ {adjust(); return Parser::INT;} 
+
+ /* TO COMMENT */
+<INITIAL> "/*" {adjust(); comment_counts = 0; begin(StartCondition__::COMMENT);}
+
+ /* TO STR */
+<INITIAL> "\"" {more(); begin(StartCondition__::STR);}
+
+ /* ERROR */
+<INITIAL> . {adjust(); errormsg.Error(errormsg.tokPos, "illegal token");}
+
+ /* COMMENT TO INITIAL */
+<COMMENT> "*/" {
+                  adjust();
+                  if(comment_counts == 0)
+                    begin(StartCondition__::INITIAL);
+                  else
+                    comment_counts--;
+               }
+<COMMENT> "/*" {adjust(); comment_counts++;}
+<COMMENT> '\n' {adjust();}
+<COMMENT> . {adjust();}
+
+ /* STR TO INITIAL */
+<STR> "\"" {
+              adjust();
+              changeStrMatched();//change the text matched
+              begin(StartCondition__::INITIAL);
+              return Parser::STRING;
+           }
+<STR> "\\"["\"] {more();}
+<STR> "\n" {more();}
+<STR> . {more();}
