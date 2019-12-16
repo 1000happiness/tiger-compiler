@@ -11,6 +11,14 @@ class BoolList {
   BoolList(bool head, BoolList* tail) : head(head), tail(tail) {}
 };
 
+class IntList {
+  public:
+    int head;
+    IntList *tail;
+
+  IntList(int head, IntList* tail) : head(head), tail(tail) {}
+};
+
 }  // namespace U
 
 #endif  // TIGER_UTIL_UTIL_H_

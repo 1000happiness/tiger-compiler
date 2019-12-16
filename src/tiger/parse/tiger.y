@@ -108,7 +108,14 @@ exp:
   | LPAREN RPAREN {$$ = new A::VoidExp(errormsg.tokPos);}
   */
   //changed sequence according to exp type
-    INT {$$ = new A::IntExp(errormsg.tokPos, $1);}  
+    IF exp THEN exp {$$ = new A::IfExp(errormsg.tokPos, $2, $4, nullptr);}
+  | IF exp THEN exp ELSE exp {$$ = new A::IfExp(errormsg.tokPos, $2, $4, $6);}
+  | FOR ID ASSIGN exp TO exp DO exp {$$ = new A::ForExp(errormsg.tokPos, $2, $4, $6, $8);}
+  | WHILE exp DO exp {$$ = new A::WhileExp(errormsg.tokPos, $2, $4);}
+  | BREAK {$$ = new A::BreakExp(errormsg.tokPos);}
+  | LET decs IN expseq END {$$ = new A::LetExp(errormsg.tokPos, $2, $4);}
+
+  | INT {$$ = new A::IntExp(errormsg.tokPos, $1);}  
   | STRING {$$ = new A::StringExp(errormsg.tokPos, $1);}
   | lvalue {$$ = new A::VarExp(errormsg.tokPos, $1);}
   | ID LBRACK exp RBRACK OF exp {$$ = new A::ArrayExp(errormsg.tokPos, $1, $3, $6);}
@@ -118,12 +125,7 @@ exp:
   | lvalue ASSIGN exp {$$ = new A::AssignExp(errormsg.tokPos, $1, $3);}
   | ID LPAREN actuals RPAREN {$$ = new A::CallExp(errormsg.tokPos, $1, $3);}
 
-  | IF exp THEN exp {$$ = new A::IfExp(errormsg.tokPos, $2, $4, nullptr);}
-  | IF exp THEN exp ELSE exp {$$ = new A::IfExp(errormsg.tokPos, $2, $4, $6);}
-  | FOR ID ASSIGN exp TO exp DO exp {$$ = new A::ForExp(errormsg.tokPos, $2, $4, $6, $8);}
-  | WHILE exp DO exp {$$ = new A::WhileExp(errormsg.tokPos, $2, $4);}
-  | BREAK {$$ = new A::BreakExp(errormsg.tokPos);}
-  | LET decs IN expseq END {$$ = new A::LetExp(errormsg.tokPos, $2, $4);}
+
 
   | exp PLUS exp {$$ = new A::OpExp(errormsg.tokPos, A::PLUS_OP, $1, $3);}
   | exp MINUS exp {$$ = new A::OpExp(errormsg.tokPos, A::MINUS_OP, $1, $3);}

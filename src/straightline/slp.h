@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cassert>
 #include <string>
-#include <iostream>
 
 namespace A {
 
@@ -65,8 +64,9 @@ class PrintStm : public Stm {
 class Exp {
  public:
   Exp(ExpKind kind) : kind(kind) {}
-  virtual IntAndTable *Interp(Table *) const = 0;
-  virtual int MaxArgs() const  = 0;
+  // TODO: you'll have to add some definitions here (lab1).
+  // Hints: You may add interfaces like `int MaxArgs()`,
+  //        and ` IntAndTable *Interp(Table *)`
 
  protected:
   ExpKind kind;
@@ -75,8 +75,8 @@ class Exp {
 class IdExp : public Exp {
  public:
   IdExp(std::string id) : Exp(ID_EXP), id(id) {}
-  int MaxArgs() const override;
-  IntAndTable *Interp(Table *) const override;
+  // TODO: you'll have to add some definitions here (lab1).
+
 
  private:
   std::string id;
@@ -85,8 +85,6 @@ class IdExp : public Exp {
 class NumExp : public Exp {
  public:
   NumExp(int num) : Exp(NUM_EXP), num(num) {}
-  int MaxArgs() const override;
-  IntAndTable *Interp(Table *) const override;
   // TODO: you'll have to add some definitions here.
 
  private:
@@ -97,8 +95,6 @@ class OpExp : public Exp {
  public:
   OpExp(Exp *left, BinOp oper, Exp *right)
       : Exp(OP_EXP), left(left), oper(oper), right(right) {}
-  int MaxArgs() const override;
-  IntAndTable *Interp(Table *) const override;
   // TODO: you'll have to add some definitions here (lab1).
 
  private:
@@ -110,8 +106,6 @@ class OpExp : public Exp {
 class EseqExp : public Exp {
  public:
   EseqExp(Stm *stm, Exp *exp) : Exp(ESEQ_EXP), stm(stm), exp(exp) {}
-  int MaxArgs() const override;
-  IntAndTable *Interp(Table *) const override;
   // TODO: you'll have to add some definitions here (lab1).
 
  private:
@@ -122,14 +116,10 @@ class EseqExp : public Exp {
 class ExpList {
  public:
   ExpList(ExpListKind kind) : kind(kind) {}
-  virtual int MaxArgs() const = 0;
-  virtual IntAndTable *Interp(Table *) const = 0;
-  virtual ExpListKind Getkind() const  = 0;
-  virtual ExpList *Gettail() const  = 0;
  // TODO: you'll have to add some definitions here (lab1).
  // Hints: You may add interfaces like `int MaxArgs()`, `int NumExps()`,
  //        and ` IntAndTable *Interp(Table *)`
-  
+
 
  protected:
   ExpListKind kind;
@@ -139,10 +129,7 @@ class PairExpList : public ExpList {
  public:
   PairExpList(Exp *head, ExpList *tail)
       : ExpList(PAIR_EXP_LIST), head(head), tail(tail) {}
-  int MaxArgs() const override;
-  IntAndTable *Interp(Table *) const override;
-  ExpListKind Getkind() const override;
-  ExpList *Gettail() const override;
+  // TODO: you'll have to add some definitions here (lab1).
 
  private:
   Exp *head;
@@ -152,10 +139,7 @@ class PairExpList : public ExpList {
 class LastExpList : public ExpList {
  public:
   LastExpList(Exp *last) : ExpList(LAST_EXP_LIST), last(last) {}
-  int MaxArgs() const override;
-  IntAndTable *Interp(Table *) const override;
-  ExpListKind Getkind() const override;
-  ExpList *Gettail() const override;
+  // TODO: you'll have to add some definitions here (lab1).
 
  private:
   Exp *last;

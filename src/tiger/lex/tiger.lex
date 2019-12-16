@@ -87,6 +87,7 @@
 <INITIAL> "while" {adjust(); return Parser::WHILE;}
 <INITIAL> "for" {adjust(); return Parser::FOR;}
 <INITIAL> "to" {adjust(); return Parser::TO;}
+<INITIAL> "break" {adjust(); return Parser::BREAK;}
 
  /* OPERATION */
 <INITIAL> "+" {adjust(); return Parser::PLUS;}
