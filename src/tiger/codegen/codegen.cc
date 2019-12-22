@@ -1,35 +1,43 @@
 #include "tiger/codegen/codegen.h"
-
+//为了实现固定栈帧的结构，只有函数开头和结尾能够对%rsp的值进行操作，所有对栈帧的操作只能使用mov，
 namespace CG {
 
 using TL = TEMP::TempList;
 
-AS::InstrList* instrList = nullptr;
+AS::InstrList* instrList = nullptr, *last = nullptr;
+F::Frame *frame;
+int maxFrameArgsNumber = 0;
 
-void emit(AS::Instr *instr){
-  instrList = new AS::InstrList(instr, instrList);
-}
+void munchStm(T::Stm *stm);
+TEMP::Temp *munchExp(T::Exp *exp);
+TEMP::TempList *munchArgs(int index, T::ExpList *args);
+
+void emit(AS::Instr *instr);
 
 AS::InstrList* Codegen(F::Frame* f, T::StmList* stmList) {
+  frame = f;
+  instrList = nullptr;
+  last = nullptr;
+  maxFrameArgsNumber = 0;
   for(auto it = stmList; it; it = it->tail){
-    //prntf("stm\n");
     munchStm(it->head);
   }
+  frame->length += maxFrameArgsNumber * F::addressSize;
   return F::F_procEntryExit2(instrList);
 }
 
 TL *munchArgs(int index, T::ExpList *args){
-  if(args == NULL) {
-		return NULL;
+  if(args == nullptr) {
+		return nullptr;
 	}
-	munchArgs(index + 1, args->tail);
-	TEMP::Temp *temp = munchExp(args->head);
-  TL *next = munchArgs(index++, args->tail);
+
   TL *argsReg = F::argsReg();
   
-  int i = 0;
   bool inframe = true;
+  TEMP::Temp *temp = munchExp(args->head);
+  
   TL *it = argsReg;
+  int i = 0;
   for(; it; it = it->tail){
     if(i == index){
       inframe = false;
@@ -37,42 +45,75 @@ TL *munchArgs(int index, T::ExpList *args){
     }
     i++;
   }
-
+  
   if(inframe){
-    emit(new AS::OperInstr("pushq `s0", new TL(F::SP(), nullptr), new TL(temp, new TL(F::SP(), nullptr)), nullptr));
-    return next;
+    int regNumber = 0;
+    for(TL *i = argsReg; i; i= i->tail){
+      regNumber++;
+    }
+    std::stringstream assemstream;
+    assemstream << "movq `s0,"<< (index - regNumber) * F::addressSize << "(`s1)";
+    emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(temp, new TL(F::SP(), nullptr))));
+    if(index - regNumber + 1 > maxFrameArgsNumber){
+      maxFrameArgsNumber = index - regNumber + 1;
+    }
   }
   else{
-    if(temp != it->head){
-      emit(new AS::MoveInstr("movq `s0 `d0", new TL(it->head, nullptr), new TL(temp, nullptr)));
-      temp = it->head;
+    if(temp == F::FP()){
+      emit(new AS::MoveInstr("movq `s0, `d0", new TL(it->head, nullptr), new TL(F::SP(), nullptr)));
+      emit(new AS::OperInstr(std::string("addq $") + frame->namedFrameLength() + std::string("+, `d0"), new TL(it->head, nullptr), new TL(it->head, nullptr), nullptr));
     }
-    return new TL(temp, next);
+    else{
+      emit(new AS::MoveInstr("movq `s0, `d0", new TL(it->head, nullptr), new TL(temp, nullptr)));
+    }
+    temp = it->head;
   }
+  TL *next = munchArgs(index + 1, args->tail);
+  return new TL(temp, next);
 }
 
 TEMP::Temp *munchExp(T::Exp *exp) {
   if(exp->kind == T::Exp::MEM){//三个节点
     T::MemExp *menExp = (T::MemExp *)exp;
-    if(menExp->kind == T::Exp::BINOP){
+    if(menExp->exp->kind == T::Exp::BINOP){
       T::BinopExp *binoExp = (T::BinopExp *)menExp->exp;
       if(binoExp->op == T::BinOp::PLUS_OP && binoExp->right->kind == T::Exp::CONST){
         TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
         TEMP::Temp *temp = munchExp(binoExp->left);
         int consti = ((T::ConstExp *)(binoExp->right))->consti;
-        std::stringstream assemstream;
-        assemstream << "movq " << consti << "(`s0), `d0";
-        emit(new AS::OperInstr(assemstream.str(), new TL(newTemp, nullptr), new TL(temp, nullptr), nullptr));
+        if(temp == F::FP()){//帧指针替换
+          std::stringstream assemstream;
+          assemstream << "movq "<< frame->namedFrameLength() << "+" << consti << "(`s0), `d0";
+          emit(new AS::MoveInstr(assemstream.str(), new TL(newTemp, nullptr), new TL(F::SP(), nullptr)));
+        }
+        else{
+          std::stringstream assemstream;
+          assemstream << "movq " << consti << "(`s0), `d0";
+          emit(new AS::MoveInstr(assemstream.str(), new TL(newTemp, nullptr), new TL(temp, nullptr)));
+        }
         return newTemp;
       }
       else if(binoExp->op == T::BinOp::PLUS_OP && binoExp->left->kind == T::Exp::CONST){
         TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
         TEMP::Temp *temp = munchExp(binoExp->right);
         int consti = ((T::ConstExp *)(binoExp->left))->consti;
-        std::stringstream assemstream;
-        assemstream << "movq " << consti << "(`s0), `d0";
-        emit(new AS::OperInstr(assemstream.str(), new TL(newTemp, nullptr), new TL(temp, nullptr), nullptr));
+        if(temp == F::FP()){//帧指针替换
+          std::stringstream assemstream;
+          assemstream << "movq "<< frame->namedFrameLength() << "+" << consti << "(`s0), `d0";
+          emit(new AS::MoveInstr(assemstream.str(), new TL(newTemp, nullptr), new TL(F::SP(), nullptr)));
+        }
+        else{
+          std::stringstream assemstream;
+          assemstream << "movq " << consti << "(`s0), `d0";
+          emit(new AS::MoveInstr(assemstream.str(), new TL(newTemp, nullptr), new TL(temp, nullptr)));
+        }
         return newTemp;
+      }
+      else{
+        TEMP::Temp *srcTemp = munchExp(binoExp);
+        TEMP::Temp *dstTemp = TEMP::Temp::NewTemp();
+        emit(new AS::MoveInstr("movq (`s0), `d0", new TL(dstTemp, nullptr), new TL(srcTemp, nullptr)));
+        return dstTemp;
       }
     }
     else if(menExp->kind == T::Exp::CONST){
@@ -80,14 +121,22 @@ TEMP::Temp *munchExp(T::Exp *exp) {
       TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
       int consti = constExp->consti;
       std::stringstream assemstream;
-      assemstream << "movq " << consti << "(0), `d0";
-      emit(new AS::OperInstr(assemstream.str(), new TL(newTemp, nullptr), nullptr, nullptr));
+      assemstream << "movq (" << consti << "), `d0";
+      emit(new AS::MoveInstr(assemstream.str(), new TL(newTemp, nullptr), nullptr));
       return newTemp;
     }
     else {
       TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
       TEMP::Temp *temp = munchExp(menExp->exp);
-      emit(new AS::MoveInstr("movq `s0, `d0", new TL(newTemp, nullptr), new TL(temp, nullptr)));
+      if(temp == F::FP()){//帧指针替换
+        std::stringstream assemstream;
+        assemstream << "movq "<< frame->namedFrameLength() << "(`s0), `d0";
+        emit(new AS::MoveInstr(assemstream.str(), new TL(newTemp, nullptr), new TL(F::SP(), nullptr)));
+      }
+      else{
+        emit(new AS::MoveInstr("movq (`s0), `d0", new TL(newTemp, nullptr), new TL(temp, nullptr)));
+      }
+      
       return newTemp;
     }
   }
@@ -114,33 +163,55 @@ TEMP::Temp *munchExp(T::Exp *exp) {
 
     TEMP::Temp *leftTemp = nullptr;
     TEMP::Temp *rightTemp = nullptr;
+    TEMP::Temp *returnTemp = nullptr;
     switch(binopExp->op) {
       case T::BinOp::PLUS_OP: 
       case T::BinOp::MINUS_OP:
       case T::BinOp::MUL_OP:
+        returnTemp = TEMP::Temp::NewTemp();
         leftTemp = munchExp(binopExp->left);
         if(binopExp->right->kind == T::Exp::CONST){
-          emit(new AS::OperInstr(opString + " `s0, `d0", new TL(leftTemp, nullptr), new TL(leftTemp, nullptr), nullptr));
+          int consti = ((T::ConstExp *)binopExp->right)->consti;
+          if(leftTemp == F::FP()){//帧指针替换，对帧指针的操作只有加法，对帧指针的加法运算相当于对栈指针的加法运算
+            emit(new AS::MoveInstr("movq `s0, `d0", new TL(returnTemp, nullptr), new TL(F::SP(), nullptr)));
+            emit(new AS::OperInstr("addq $" + frame->namedFrameLength() + "+, `d0", new TL(returnTemp, nullptr), new TL(returnTemp, nullptr), nullptr));
+            std::stringstream assemstream;
+            assemstream << opString<< " $" << consti << ", `d0";
+            emit(new AS::OperInstr(assemstream.str(), new TL(returnTemp, nullptr), new TL(returnTemp, nullptr), nullptr));
+          }
+          else{
+            emit(new AS::MoveInstr("movq `s0, `d0", new TL(returnTemp, nullptr), new TL(leftTemp, nullptr)));
+            std::stringstream assemstream;
+            assemstream << opString<< " $" << consti << ", `d0";
+            emit(new AS::OperInstr(assemstream.str(), new TL(returnTemp, nullptr), new TL(returnTemp, nullptr), nullptr));
+          }
         }
         else{
           rightTemp = munchExp(binopExp->right);
-          emit(new AS::OperInstr(opString + " `s0, `d0", new TL(leftTemp, nullptr), new TL(leftTemp, new TL(rightTemp, nullptr)), nullptr));
+          if(leftTemp == F::FP()){//帧指针替换，对帧指针的操作只有加法，对帧指针的加法运算相当于对栈指针的加法运算
+            emit(new AS::MoveInstr("movq `s0, `d0", new TL(returnTemp, nullptr), new TL(F::SP(), nullptr)));
+            emit(new AS::OperInstr("addq $" + frame->namedFrameLength() + "+, `d0", new TL(returnTemp, nullptr), new TL(returnTemp, nullptr), nullptr));
+            emit(new AS::OperInstr(opString + " `s1, `d0", new TL(F::SP(), nullptr), new TL(F::SP(), new TL(rightTemp, nullptr)), nullptr));
+          }
+          else{
+            emit(new AS::MoveInstr("movq `s0, `d0", new TL(returnTemp, nullptr), new TL(leftTemp, nullptr)));
+            emit(new AS::OperInstr(opString + " `s1, `d0", new TL(returnTemp, nullptr), new TL(returnTemp, new TL(rightTemp, nullptr)), nullptr));
+          }
         }
         break;
       case T::BinOp::DIV_OP:
         leftTemp = munchExp(binopExp->left);
         rightTemp = munchExp(binopExp->right);
-        if(leftTemp != F::RV()){
-          emit(new AS::MoveInstr("movq `s0 `d0", new TL(F::RV(), nullptr), new TL(leftTemp, nullptr)));
-          leftTemp = F::RV();
-        }
+        emit(new AS::MoveInstr("movq `s0 `d0", new TL(F::RV(), nullptr), new TL(leftTemp, nullptr)));
+        returnTemp = F::RV();
+        emit(new AS::OperInstr("cqto", nullptr, nullptr, nullptr));
         emit(new AS::OperInstr(opString + " `s0", new TL(F::RV(), new TL(F::RD(), nullptr)), new TL(rightTemp, new TL(F::RV(), nullptr)), nullptr));
         break;
       default: {
         break;
       }
     }
-    return leftTemp;
+    return returnTemp;
   }
   else if(exp->kind == T::Exp::CONST){//一个节点
     T::ConstExp *constExp = ((T::ConstExp *)exp);
@@ -148,22 +219,22 @@ TEMP::Temp *munchExp(T::Exp *exp) {
     int consti = constExp->consti;
     std::stringstream assemstream;
     assemstream << "movq $" << consti << ", `d0";
-    emit(new AS::OperInstr(assemstream.str(), new TL(newTemp, nullptr), nullptr, nullptr));
+    emit(new AS::MoveInstr(assemstream.str(), new TL(newTemp, nullptr), nullptr));
     return newTemp;
   }
   else if(exp->kind == T::Exp::TEMP){//一个节点
-    T::TempExp *tempExp = ((T::TempExp *)exp);
+    T::TempExp *tempExp = ((T::TempExp *)exp); 
     return tempExp->temp;
   }
   else if(exp->kind == T::Exp::CALL){//一个节点
-    //prntf("callexp\n");
-    //fflush(stdout);
+    
+
     T::CallExp *callExp = (T::CallExp *)exp;
     T::NameExp *nameExp = (T::NameExp *)callExp->fun;
     TL *argsTL = munchArgs(0, callExp->args);
     std::stringstream assemstream;
-    assemstream << "call " << nameExp->name->Name();
-    emit(new AS::OperInstr(assemstream.str(), new TL(F::RV(), F::CallerSaved()), argsTL, nullptr));
+    assemstream << "callq " << nameExp->name->Name();
+    emit(new AS::OperInstr(assemstream.str(), new TL(F::RV(), F::CallerSaves()), argsTL, nullptr));
     return F::RV();
   }
   else if(exp->kind == T::Exp::NAME){//一个节点
@@ -171,8 +242,8 @@ TEMP::Temp *munchExp(T::Exp *exp) {
     TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
     TEMP::Label *label = nameExp->name;
     std::stringstream assemstream;
-    assemstream << "movq $." << label->Name() << "`d0";
-    emit(new AS::OperInstr(assemstream.str(), new TL(newTemp, nullptr), nullptr, nullptr));
+    assemstream << "leaq " << label->Name() << "(%rip), `d0";
+    emit(new AS::MoveInstr(assemstream.str(), new TL(newTemp, nullptr), nullptr));
     return newTemp;
   }
 }
@@ -187,22 +258,35 @@ void munchStm(T::Stm *stm){
     if(dst->kind == T::Exp::MEM) {
       T::MemExp *menExp = (T::MemExp *)dst;
       if(menExp->exp->kind == T::Exp::BINOP){
-        TEMP::Temp *srcTemp = munchExp(src);
         T::BinopExp *binoExp = (T::BinopExp *)menExp->exp;
         if(binoExp->op == T::BinOp::PLUS_OP && binoExp->right->kind == T::Exp::CONST){
           TEMP::Temp *temp = munchExp(binoExp->left);
           int consti = ((T::ConstExp *)(binoExp->right))->consti;
           if(src->kind == T::Exp::CONST){
             int constsrc = ((T::ConstExp *)(src))->consti;
-            std::stringstream assemstream;
-            assemstream << "movq $"<< constsrc<< ", " << consti << "(`s1)";
-            emit(new AS::OperInstr(assemstream.str(), nullptr, new TL(temp, nullptr), nullptr));
+            if(temp == F::FP()){//帧指针替换
+              std::stringstream assemstream;
+              assemstream << "movq $"<< constsrc<< ", " << frame->namedFrameLength() << "+" << consti << "(`s0)";
+              emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(F::SP(), nullptr)));
+            }
+            else{
+              std::stringstream assemstream;
+              assemstream << "movq $"<< constsrc<< ", " << consti << "(`s0)";
+              emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(temp, nullptr)));
+            }
           }
           else{
             TEMP::Temp *srcTemp = munchExp(src);
-            std::stringstream assemstream;
-            assemstream << "movq `s0," << consti << "(`s1)";
-            emit(new AS::OperInstr(assemstream.str(), nullptr, new TL(srcTemp, new TL(temp, nullptr)), nullptr));
+            if(temp == F::FP()){//帧指针替换
+              std::stringstream assemstream;
+              assemstream << "movq `s0, " << frame->namedFrameLength() << "+"<< consti << "(`s1)";
+              emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(srcTemp, new TL(F::SP(), nullptr))));
+            }
+            else{
+              std::stringstream assemstream;
+              assemstream << "movq `s0, " << consti << "(`s1)";
+              emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(srcTemp, new TL(temp, nullptr))));
+            }
           }
         }
         else if(binoExp->op == T::BinOp::PLUS_OP && binoExp->left->kind == T::Exp::CONST){
@@ -210,16 +294,35 @@ void munchStm(T::Stm *stm){
           int consti = ((T::ConstExp *)(binoExp->left))->consti;
           if(src->kind == T::Exp::CONST){
             int constsrc = ((T::ConstExp *)(src))->consti;
-            std::stringstream assemstream;
-            assemstream << "movq $"<< constsrc<< ", " << consti << "(`s1)";
-            emit(new AS::OperInstr(assemstream.str(), nullptr, new TL(temp, nullptr), nullptr));
+            if(temp == F::FP()){//帧指针替换
+              std::stringstream assemstream;
+              assemstream << "movq $"<< constsrc<< ", " << frame->namedFrameLength() << "+" << consti << "(`s0)";
+              emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(F::SP(), nullptr)));
+            }
+            else{
+              std::stringstream assemstream;
+              assemstream << "movq $"<< constsrc<< ", " << consti << "(`s0)";
+              emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(temp, nullptr)));
+            }
           }
           else{
             TEMP::Temp *srcTemp = munchExp(src);
-            std::stringstream assemstream;
-            assemstream << "movq `s0," << consti << "(`s1)";
-            emit(new AS::OperInstr(assemstream.str(), nullptr, new TL(srcTemp, new TL(temp, nullptr)), nullptr));
+            if(temp == F::FP()){//帧指针替换
+              std::stringstream assemstream;
+              assemstream << "movq `s0, " << frame->namedFrameLength() << "+" << consti << "(`s1)";
+              emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(srcTemp, new TL(F::SP(), nullptr))));
+            }
+            else{
+              std::stringstream assemstream;
+              assemstream << "movq `s0, " << consti << "(`s1)";
+              emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(srcTemp, new TL(temp, nullptr))));
+            }
           }
+        }
+        else{
+          TEMP::Temp *temp = munchExp(binoExp);
+          TEMP::Temp *srcTemp = munchExp(src);
+          emit(new AS::MoveInstr("movq `s0, (`d0)", new TL(temp, nullptr), new TL(srcTemp, nullptr)));
         }
       }
       else if(menExp->exp->kind == T::Exp::CONST){
@@ -229,25 +332,66 @@ void munchStm(T::Stm *stm){
           int constsrc = ((T::ConstExp *)(src))->consti;
           std::stringstream assemstream;
           assemstream << "movq $"<< constsrc <<", (" << consti << ")";
-          emit(new AS::OperInstr(assemstream.str(), nullptr, nullptr, nullptr));
+          emit(new AS::MoveInstr(assemstream.str(), nullptr, nullptr));
         }
         else{
           TEMP::Temp *srcTemp = munchExp(src);
           std::stringstream assemstream;
           assemstream << "movq `s0, (" << consti << ")";
-          emit(new AS::OperInstr(assemstream.str(), nullptr, new TL(srcTemp, nullptr), nullptr));
+          emit(new AS::MoveInstr(assemstream.str(), nullptr, new TL(srcTemp, nullptr)));
         }
       }
       else {
-        TEMP::Temp *srcTemp = munchExp(src);
-        TEMP::Temp *dstTemp = munchExp(menExp);
-        emit(new AS::MoveInstr("movq `s0, `s1", new TL(srcTemp, nullptr), new TL(dstTemp, nullptr)));
+        TEMP::Temp *dstTemp = munchExp(menExp->exp);
+        if(src->kind == T::Exp::CONST){
+          int constsrc = ((T::ConstExp *)(src))->consti;
+          if(dstTemp == F::FP()){//帧指针替换
+            std::stringstream assemstream;
+            assemstream << "movq $"<< constsrc <<", "<< frame->namedFrameLength() << "(`s0)";
+            emit(new AS::OperInstr(assemstream.str(), nullptr, new TL(F::SP(), nullptr), nullptr));
+          }
+          else{
+            std::stringstream assemstream;
+            assemstream << "movq $"<< constsrc <<", (`s0)";
+            emit(new AS::OperInstr(assemstream.str(), nullptr, new TL(dstTemp, nullptr), nullptr));
+          }
+        }
+        else{
+          TEMP::Temp *srcTemp = munchExp(src);
+          if(srcTemp != dstTemp){
+            if(dstTemp == F::FP()){//帧指针替换
+              std::stringstream assemstream;
+              assemstream << "movq `s0, "<< frame->namedFrameLength() << "(`s1)";
+              emit(new AS::OperInstr("movq `s0, (`s1)", nullptr, new TL(srcTemp, new TL(F::SP(), nullptr)), nullptr));
+            }
+            else{
+              emit(new AS::OperInstr("movq `s0, (`s1)", nullptr, new TL(srcTemp, new TL(dstTemp, nullptr)), nullptr));
+            }
+          }
+        }
       }
     }
     else if(dst->kind == T::Exp::TEMP) {
-      TEMP::Temp *srcTemp = munchExp(src);
       TEMP::Temp *dstTemp = munchExp(dst);
-      emit(new AS::MoveInstr("movq `s0, `s1", new TL(srcTemp, nullptr), new TL(dstTemp, nullptr)));
+      if(src->kind == T::Exp::CONST){
+        int constsrc = ((T::ConstExp *)(src))->consti;
+        std::stringstream assemstream;
+        assemstream << "movq $"<< constsrc <<", `d0";
+        emit(new AS::MoveInstr(assemstream.str(), new TL(dstTemp, nullptr), nullptr));
+      }
+      else{
+        TEMP::Temp *srcTemp = munchExp(src);
+        if(srcTemp == F::FP()){
+          fprintf(stdout, "?????");
+          emit(new AS::MoveInstr("movq `s0, `d0", new TL(dstTemp, nullptr), new TL(F::SP(), nullptr)));
+          std::stringstream assemstream;
+          assemstream<< "addq $" << frame->namedFrameLength() << "+" << ", `s0";
+          emit(new AS::OperInstr(assemstream.str(), new TL(dstTemp, nullptr), new TL(dstTemp, nullptr), nullptr));
+        }
+        else{
+          emit(new AS::MoveInstr("movq `s0, `d0", new TL(dstTemp, nullptr), new TL(srcTemp, nullptr)));
+        }
+      }
     }
   }
   else if(stm->kind == T::Stm::JUMP) {
@@ -260,32 +404,32 @@ void munchStm(T::Stm *stm){
     T::CjumpStm *cjumpStm = (T::CjumpStm *)stm;
     TEMP::Temp *leftTemp = munchExp(cjumpStm->left);
     TEMP::Temp *rightTemp = munchExp(cjumpStm->right);
-    std::string jmpString;
+    std::string jmpqString;
     switch(cjumpStm->op) {
       case T::RelOp::EQ_OP: 
-        jmpString = "je";
+        jmpqString = "je";
         break;
       case T::RelOp::NE_OP: 
-        jmpString = "jne";
+        jmpqString = "jne";
         break;
       case T::RelOp::LT_OP: 
-        jmpString = "jl";
+        jmpqString = "jl";
         break;
       case T::RelOp::GT_OP: 
-        jmpString = "jg";
+        jmpqString = "jg";
         break;
       case T::RelOp::LE_OP: 
-        jmpString = "jle";
+        jmpqString = "jle";
         break;
       case T::RelOp::GE_OP: 
-        jmpString = "jge";
+        jmpqString = "jge";
         break;
       default: 
         break;
     }
-    emit(new AS::OperInstr("cmpq `s0, `s1", nullptr, new TL(leftTemp, new TL(rightTemp, nullptr)), nullptr));
+    emit(new AS::OperInstr("cmpq `s0, `s1", nullptr, new TL(rightTemp, new TL(leftTemp, nullptr)), nullptr));
     std::stringstream assemstream;
-    assemstream << jmpString << cjumpStm->true_label->Name();
+    assemstream << jmpqString << " " << cjumpStm->true_label->Name();
     emit(new AS::OperInstr(assemstream.str(), nullptr, nullptr, 
       new AS::Targets(new TEMP::LabelList(cjumpStm->true_label, new TEMP::LabelList(cjumpStm->false_label, nullptr))))
     );
@@ -299,6 +443,17 @@ void munchStm(T::Stm *stm){
   else if(stm->kind == T::Stm::LABEL) {
     T::LabelStm* labelStm = (T::LabelStm *)stm;
     emit(new AS::LabelInstr(labelStm->label->Name(), labelStm->label));
+  }
+}
+
+void emit(AS::Instr *instr){
+  if(last == nullptr){
+    instrList = new AS::InstrList(instr, nullptr);
+    last = instrList;
+  }
+  else{
+    last->tail = new AS::InstrList(instr, nullptr);
+    last = last->tail;
   }
 }
 

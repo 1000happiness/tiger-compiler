@@ -16,6 +16,7 @@ extern EM::ErrorMsg errormsg;
 namespace TR {
 
 F::FragList *fraglist = nullptr;
+F::FragList *fraglistCur = nullptr;
 
 /*-------------------------------------------------------------------------------*/
 
@@ -25,7 +26,7 @@ class Access {
   F::Access *access;
 
   Access(Level *level, F::Access *access) : level(level), access(access) {}
-  static Access *AllocLocal(Level *level, bool escape, int size);
+  static Access *AllocLocal(Level *level, bool escape);
 };
 
 class AccessList {
@@ -48,9 +49,16 @@ class Level {
   Level(F::Frame *frame, Level *parent) : frame(frame), parent(parent) {}
   AccessList *Formals() {
     F::AccessList *f_accesslist = frame->getFormals();
-    TR::AccessList *tr_accesslist = nullptr;
+    TR::AccessList *tr_accesslist = nullptr, *cur = nullptr;
     for(auto it = f_accesslist; it; it=it->tail){
-      tr_accesslist = new TR::AccessList(new Access(this, it->head), tr_accesslist);
+      if(tr_accesslist == nullptr){
+        tr_accesslist = new TR::AccessList(new TR::Access(this, it->head), nullptr);
+        cur = tr_accesslist;
+      }
+      else{
+        cur->tail = new TR::AccessList(new TR::Access(this, it->head), nullptr);
+        cur = cur->tail;
+      }
     }
     return tr_accesslist;
   }
@@ -58,10 +66,9 @@ class Level {
   static Level *NewLevel(
     Level *parent, 
     TEMP::Label *name,
-    U::BoolList *formals, 
-    U::IntList *formalsOffset = nullptr
+    U::BoolList *formals
   ){
-    F::Frame *frame = F::newFrame(name, formals, formalsOffset);
+    F::Frame *frame = F::newFrame(name, formals);
     Level *level = new Level(frame, parent);
     return level;
   }
@@ -186,6 +193,7 @@ class CxExp : public Exp {
     TEMP::Temp *temp = TEMP::Temp::NewTemp();
     TEMP::Label *trueLabel = TEMP::NewLabel();
     TEMP::Label *falseLabel = TEMP::NewLabel();
+    TEMP::Label *endLabel = TEMP::NewLabel();
     TR::Cx cx = this->cx;
     TR::do_patch(cx.trues, trueLabel);
     TR::do_patch(cx.falses, falseLabel);
@@ -206,10 +214,16 @@ class CxExp : public Exp {
               new T::ConstExp(1)
             ),
             new T::SeqStm(
-              new T::LabelStm(falseLabel),
-              new T::MoveStm(
-                new T::TempExp(temp),
-                new T::ConstExp(0)
+              new T::LabelStm(endLabel),
+              new T::SeqStm(
+                new T::LabelStm(falseLabel),
+                new T::SeqStm(
+                  new T::MoveStm(
+                    new T::TempExp(temp),
+                    new T::ConstExp(0)
+                  ),
+                  new T::LabelStm(endLabel)
+                )
               )
             )
           )
@@ -233,22 +247,32 @@ class CxExp : public Exp {
 
 void procEntryExit(Level *level, Exp *body) {
 	T::Stm *result = F::F_procEntryExit1(level->frame, body->UnNx());
-	fraglist = new F::FragList(new F::ProcFrag(result, level->frame), fraglist);
+  if(fraglist == nullptr){
+    fraglist = new F::FragList(new F::ProcFrag(result, level->frame), nullptr);
+    fraglistCur = fraglist;
+  }
+	else{
+    fraglistCur->tail = new F::FragList(new F::ProcFrag(result, level->frame), nullptr);
+    fraglistCur = fraglistCur->tail;
+  }
 }
 
 F::FragList *TranslateProgram(A::Exp *root) {
   ExpAndTy expty(nullptr, nullptr);
-  Level *level = Level::NewLevel(Outermost(), TEMP::NamedLabel("tigermain"), new U::BoolList(true, nullptr), new U::IntList(8 , nullptr)); 
-  if (root) 
+  Level *level = Level::NewLevel(Outermost(), TEMP::NamedLabel("tigermain"), new U::BoolList(true, nullptr));
+  T::ExpStm *expStm = new T::ExpStm(new T::ConstExp(0));
+  procEntryExit(level, new NxExp(expStm)); 
+  if (root) {
     expty = root->Translate(E::BaseVEnv(), E::BaseTEnv(), level, nullptr);
-  
-  procEntryExit(level, expty.exp);
+    expStm->exp = expty.exp->UnEx();
+  }
+  //procEntryExit(level, new NxExp(expStm));
 
   return fraglist;
 }
 
-Access *Access::AllocLocal(Level *level, bool escape, int size) {
-  F::Access *f_access = level->frame->allocLocal(escape, size);
+Access *Access::AllocLocal(Level *level, bool escape) {
+  F::Access *f_access = level->frame->allocLocal(escape);
   return new Access(level, f_access);
 }
 
@@ -297,37 +321,24 @@ TR::ExpAndTy SimpleVar::Translate(S::Table<E::EnvEntry> *venv,
   TR::Level *declevel = ((E::VarEntry *)vy)->access->level;
 
   TR::Exp *exp = nullptr;
-  if(declevel == level){
-    exp = new TR::ExExp(
-      new T::MemExp(
-        ((E::VarEntry *)vy)->access->access->ToExp(new T::TempExp(F::FP()))
-      )
-    );
-  }
-  else{
-    //实现静态链
-    T::Exp *staticLink = new T::TempExp(F::FP());
-    TR::Level *it = level;
-    while(true){
-      if(it == TR::Outermost()){
-        break;
-      }
-      staticLink = new T::MemExp(
-        it->Formals()->head->access->ToExp(staticLink)
-      );
-      if(it == declevel){
-        break;
-      }
-      else{
-        it = it->parent;
-      }
+  //实现静态链
+  T::Exp *staticLink = new T::TempExp(F::FP());
+  TR::Level *it = level;
+  while(true){
+    if(it == TR::Outermost()){
+      break;
     }
-    exp = new TR::ExExp(
-      new T::MemExp(
-        ((E::VarEntry *)vy)->access->access->ToExp(staticLink)
-      )
-    );
+    if(it == declevel){
+      break;
+    }
+    else{
+      it = it->parent;
+      staticLink = it->Formals()->head->access->ToExp(staticLink);
+    }
   }
+  exp = new TR::ExExp(
+    ((E::VarEntry *)vy)->access->access->ToExp(staticLink)
+  );
   
   return TR::ExpAndTy(exp, ty);
 }
@@ -346,7 +357,7 @@ TR::ExpAndTy FieldVar::Translate(S::Table<E::EnvEntry> *venv,
         actualty = it->head->ty;
         break;
       }
-      offset += (it->head->ty->kind == TY::Ty::INT ? F::wordSize: F::addressSize); 
+      offset += F::addressSize; 
     }
 
     if(actualty == nullptr){
@@ -396,7 +407,11 @@ TR::ExpAndTy SubscriptVar::Translate(S::Table<E::EnvEntry> *venv,
       new T::BinopExp(
         T::PLUS_OP,
         varexpty.exp->UnEx(),
-        subscriptexpty.exp->UnEx()
+        new T::BinopExp(
+          T::BinOp::MUL_OP,
+          subscriptexpty.exp->UnEx(),
+          new T::ConstExp(F::addressSize)
+        )
       )
     )
   );
@@ -431,10 +446,11 @@ TR::ExpAndTy StringExp::Translate(S::Table<E::EnvEntry> *venv,
                                   TEMP::Label *label) const {
   // TODO: Put your codes here (lab5).
   TEMP::Label *stringlabel = TEMP::NewLabel();
+  //call
+  //赋值
+  //
   TR::Exp *exp = new TR::ExExp(
-    new T::MemExp(
-      new T::NameExp(stringlabel)
-    )
+    new T::NameExp(stringlabel)
   );
   
   TR::fraglist = new F::FragList(new F::StringFrag(stringlabel, this->s), TR::fraglist);
@@ -482,6 +498,7 @@ TR::ExpAndTy CallExp::Translate(S::Table<E::EnvEntry> *venv,
   argsit = this->args;
 
   T::ExpList *argslist = nullptr;
+  T::ExpList *argsCur = nullptr;
   for(; parait && argsit; parait = parait->tail, argsit = argsit->tail){
 
     TR::ExpAndTy argsexpty = argsit->head->Translate(venv, tenv, level, label);
@@ -489,25 +506,58 @@ TR::ExpAndTy CallExp::Translate(S::Table<E::EnvEntry> *venv,
     if(!parait->head->IsSameType(argsexpty.ty)){
       errormsg.Error(argsit->head->pos, "para type mismatch");
     }
-    argslist = new T::ExpList(argsexpty.exp->UnEx(), argslist);
+    
+    if(argslist == nullptr){
+      argslist = new T::ExpList(argsexpty.exp->UnEx(), nullptr);
+      argsCur = argslist;
+    }
+    else{
+      argsCur->tail = new T::ExpList(argsexpty.exp->UnEx(), nullptr);
+      argsCur = argsCur->tail;
+    }
   }
 
   TEMP::Label *funLabel = ((E::FunEntry *)vy)->label;
   if(funLabel == nullptr){
     funLabel = TEMP::NamedLabel(this->func->Name());
   }
+
+ 
   
   if(external){
     exp = new TR::ExExp(
-      F::externalCall(new T::NameExp(funLabel), argslist)
+      F::externalCall(level->frame, new T::NameExp(funLabel), argslist)
     );
   }
   else{
+    T::Exp *staticLink = new T::TempExp(F::FP());
+    TR::Level *calllevel = level; //call level
+    TR::Level *calleelevel = ((E::FunEntry *)vy)->level; //callee define level
+    // printf("%s caller\n", calllevel->frame->label->Name().c_str());
+    // printf("%s callees\n", calleelevel->frame->label->Name().c_str());
+    // fflush(stdout);
+    if(calleelevel == calllevel){ //calllevel = calleelevel
+      staticLink = new T::TempExp(F::FP());
+    }
+    else{// calllevel > calleelevel
+      while(true){
+        if(calllevel == TR::Outermost()){
+          errormsg.Error(this->pos, "static link error");
+          break;
+        }
+        if(calleelevel == calllevel){
+          break;
+        }
+        else{
+          calllevel = calllevel->parent;
+          staticLink = calllevel->Formals()->head->access->ToExp(staticLink);
+          printf("%s call change\n", calleelevel->frame->label->Name().c_str());
+        }
+      }
+    }
+    argslist = new T::ExpList(staticLink, argslist);//静态链第一个参数
     exp = new TR::ExExp(
-      new T::CallExp(
-        new T::NameExp(funLabel),
-        argslist
-      )
+      F::normalCall(level->frame, new T::NameExp(funLabel), argslist)
     );
   }
 
@@ -554,7 +604,10 @@ TR::ExpAndTy OpExp::Translate(S::Table<E::EnvEntry> *venv,
   case LE_OP:
   case GT_OP:
   case GE_OP:
-    
+    if(!leftty->IsSameType(rightty)){
+      errormsg.Error(this->right->pos, "same type required");
+      return TR::ExpAndTy(new TR::ExExp(new T::ConstExp(0)), TY::IntTy::Instance());
+    }
     switch (this->oper)
     {
       case EQ_OP:
@@ -578,40 +631,53 @@ TR::ExpAndTy OpExp::Translate(S::Table<E::EnvEntry> *venv,
     default:
       break;
     }
+    if(leftty->kind == TY::Ty::STRING){
+      switch (this->oper)
+      {
+        case EQ_OP:
+          exp = new TR::ExExp(
+            F::externalCall(
+              level->frame,
+              new T::NameExp(TEMP::NamedLabel("stringEqual")),
+              new T::ExpList(leftexpty.exp->UnEx(), new T::ExpList(rightexpty.exp->UnEx(), nullptr))
+            )
+          );
+          return TR::ExpAndTy(exp, TY::IntTy::Instance());
+        case NEQ_OP:
+          exp = new TR::ExExp(
+            F::externalCall(
+              level->frame,
+              new T::NameExp(TEMP::NamedLabel("not")),
+              new T::ExpList(
+                F::externalCall(
+                  level->frame,
+                  new T::NameExp(TEMP::NamedLabel("stringEqual")),
+                  new T::ExpList(leftexpty.exp->UnEx(), new T::ExpList(rightexpty.exp->UnEx(), nullptr))
+                ),
+                nullptr
+              )
+            )
+          );
+          return TR::ExpAndTy(exp, TY::IntTy::Instance());
+        case LT_OP:
+          relop = T::LT_OP;
+          break;
+        case LE_OP:
+          relop = T::LE_OP;
+          break;
+        case GT_OP:
+          relop = T::GT_OP;
+          break;
+        case GE_OP:
+          relop = T::GE_OP;
+          break;
+      default:
+        break;
+      }
+    }
     trueLabel = TEMP::NewLabel();
     falseLabel = TEMP::NewLabel();
     temp = TEMP::Temp::NewTemp();
-    /*exp = new TR::ExExp(
-      new T::EseqExp(
-        new T::SeqStm(
-          new T::LabelStm(trueLabel),
-          new T::SeqStm(
-            new T::MoveStm(
-              new T::TempExp(temp),
-              new T::ConstExp(1)
-            ),
-            new T::SeqStm(
-              new T::LabelStm(falseLabel),
-              new T::SeqStm(
-                new T::MoveStm(
-                  new T::TempExp(temp),
-                  new T::ConstExp(1)
-                ),
-                new T::CjumpStm(
-                  relop,
-                  leftexpty.exp->UnEx(),
-                  rightexpty.exp->UnEx(),
-                  trueLabel,
-                  falseLabel
-                )
-              )
-            )
-          )
-        ),
-        new T::TempExp(temp)
-      )
-    );*/
-
     exp = new TR::CxExp(
       TR::Cx(
         new TR::PatchList(&trueLabel ,nullptr),
@@ -628,13 +694,8 @@ TR::ExpAndTy OpExp::Translate(S::Table<E::EnvEntry> *venv,
     exp = new TR::ExExp(
       exp->UnEx()
     );
-    if(!leftty->IsSameType(rightty)){
-      errormsg.Error(this->right->pos, "same type required");
-      return TR::ExpAndTy(new TR::ExExp(new T::ConstExp(0)), TY::IntTy::Instance());
-    }
-    else{
-      return TR::ExpAndTy(exp, TY::IntTy::Instance());
-    }
+    
+    return TR::ExpAndTy(exp, TY::IntTy::Instance());
   default:
     errormsg.Error(this->right->pos, "undefined operation");
     return TR::ExpAndTy(new TR::ExExp(new T::ConstExp(0)), TY::VoidTy::Instance());
@@ -738,27 +799,23 @@ TR::ExpAndTy RecordExp::Translate(S::Table<E::EnvEntry> *venv,
       }
     }
 
-    //此处需要注意的是地址大小是8byte，而int类型的大小是4byte，为了translate的实现与机器无关，需要在frame模块中定义地址的大小
-    size += (argsexpty.ty->kind == TY::Ty::INT ? F::wordSize: F::addressSize);
+    size += F::addressSize;
   }
 
   exp = new TR::ExExp(
     new T::EseqExp(
       new T::SeqStm(
         new T::MoveStm(
-          new T::MemExp(
-            new T::TempExp(temp)
-          ),
-          new T::CallExp(
+          new T::TempExp(temp),
+          F::externalCall(
+            level->frame,
             new T::NameExp(TEMP::NamedLabel("allocRecord")),
             new T::ExpList(new T::ConstExp(size), nullptr)
           )
         ),
         initexplist
       ),
-      new T::MemExp(
-        new T::TempExp(temp)
-      )
+      new T::TempExp(temp)
     )
   );
 
@@ -887,13 +944,14 @@ TR::ExpAndTy IfExp::Translate(S::Table<E::EnvEntry> *venv,
   
   TEMP::Label *thenLabel = TEMP::NewLabel();
   TEMP::Label *elseLabel = TEMP::NewLabel();
+  TEMP::Label *endLabel = TEMP::NewLabel();
   TEMP::Temp *result = nullptr;
   if(thenexpty.exp->kind == TR::Exp::NX || thenexpty.ty->kind == TY::Ty::VOID){
     if(this->elsee == nullptr){
       exp = new TR::NxExp(
         new T::SeqStm(
           new T::CjumpStm(
-            T::LT_OP,
+            T::GT_OP,
             testexpty.exp->UnEx(),
             new T::ConstExp(0),
             thenLabel,
@@ -913,7 +971,7 @@ TR::ExpAndTy IfExp::Translate(S::Table<E::EnvEntry> *venv,
       exp = new TR::NxExp(
         new T::SeqStm(
           new T::CjumpStm(
-            T::LT_OP,
+            T::GT_OP,
             testexpty.exp->UnEx(),
             new T::ConstExp(0),
             thenLabel,
@@ -924,11 +982,17 @@ TR::ExpAndTy IfExp::Translate(S::Table<E::EnvEntry> *venv,
             new T::SeqStm(
               thenexpty.exp->UnNx(),
               new T::SeqStm(
-                new T::LabelStm(elseLabel),
-                elseexpty.exp->UnNx()
+                new T::LabelStm(endLabel),
+                new T::SeqStm(
+                  new T::LabelStm(elseLabel),
+                  new T::SeqStm(
+                    elseexpty.exp->UnNx(),
+                    new T::LabelStm(endLabel)
+                  )
+                )
               )
             )
-          )
+          ) 
         )
       );
     }
@@ -939,7 +1003,7 @@ TR::ExpAndTy IfExp::Translate(S::Table<E::EnvEntry> *venv,
       new T::EseqExp(
         new T::SeqStm(
           new T::CjumpStm(
-            T::LT_OP,
+            T::GT_OP,
             testexpty.exp->UnEx(),
             new T::ConstExp(0),
             thenLabel,
@@ -953,10 +1017,16 @@ TR::ExpAndTy IfExp::Translate(S::Table<E::EnvEntry> *venv,
                 thenexpty.exp->UnEx()
               ),
               new T::SeqStm(
-                new T::LabelStm(elseLabel),
-                new T::MoveStm(
-                  new T::TempExp(result),
-                  elseexpty.exp->UnEx()
+                new T::LabelStm(endLabel),
+                new T::SeqStm(
+                  new T::LabelStm(elseLabel),
+                  new T::SeqStm(
+                    new T::MoveStm(
+                      new T::TempExp(result),
+                      elseexpty.exp->UnEx()
+                    ),
+                    new T::LabelStm(endLabel)
+                  )
                 )
               )
             )
@@ -994,7 +1064,7 @@ TR::ExpAndTy WhileExp::Translate(S::Table<E::EnvEntry> *venv,
       new T::LabelStm(testLabel),
       new T::SeqStm(
         new T::CjumpStm(
-          T::LT_OP,
+          T::GT_OP,
           testexpty.exp->UnEx(),
           new T::ConstExp(0),
           bodyLabel,
@@ -1042,7 +1112,8 @@ TR::ExpAndTy ForExp::Translate(S::Table<E::EnvEntry> *venv,
   if (!highty->IsSameType(TY::IntTy::Instance())) {
     errormsg.Error(this->pos, "for exp's range type is not integer");
   }
-  venv->Enter(this->var, new E::VarEntry(TR::Access::AllocLocal(level, true, F::wordSize), TY::IntTy::Instance(), false));
+  TR::Access *i_access = TR::Access::AllocLocal(level, true);
+  venv->Enter(this->var, new E::VarEntry(i_access, TY::IntTy::Instance(), false));
   tenv->Enter(this->var, TY::IntTy::Instance());
 
   //check body
@@ -1072,13 +1143,12 @@ TR::ExpAndTy ForExp::Translate(S::Table<E::EnvEntry> *venv,
   venv->EndScope();
   tenv->EndScope();
 
-  TEMP::Temp *lowTemp = TEMP::Temp::NewTemp();
   TEMP::Temp *highTemp = TEMP::Temp::NewTemp();
   
   exp = new TR::NxExp(
     new T::SeqStm(
       new T::MoveStm(
-        new T::TempExp(lowTemp),
+        i_access->access->ToExp(new T::TempExp(F::FP())),
         lowexpty.exp->UnEx()
       ),
       new T::SeqStm(
@@ -1091,7 +1161,7 @@ TR::ExpAndTy ForExp::Translate(S::Table<E::EnvEntry> *venv,
           new T::SeqStm(
             new T::CjumpStm(
               T::LE_OP,
-              new T::TempExp(lowTemp),
+              i_access->access->ToExp(new T::TempExp(F::FP())),
               new T::TempExp(highTemp),
               bodyLabel,
               doneLabel
@@ -1102,14 +1172,20 @@ TR::ExpAndTy ForExp::Translate(S::Table<E::EnvEntry> *venv,
                 bodyexpty.exp->UnNx(),
                 new T::SeqStm(
                   new T::MoveStm(
-                    new T::TempExp(lowTemp),
+                    i_access->access->ToExp(new T::TempExp(F::FP())),
                     new T::BinopExp(
                       T::PLUS_OP,
-                      new T::TempExp(lowTemp),
+                      i_access->access->ToExp(new T::TempExp(F::FP())),
                       new T::ConstExp(1)
                     )
                   ),
-                  new T::LabelStm(doneLabel)
+                  new T::SeqStm(
+                    new T::JumpStm(
+                      new T::NameExp(testLabel),
+                      new TEMP::LabelList(testLabel, nullptr)
+                    ),
+                    new T::LabelStm(doneLabel)
+                  )
                 )
               )
             )
@@ -1215,17 +1291,14 @@ TR::ExpAndTy ArrayExp::Translate(S::Table<E::EnvEntry> *venv,
   exp = new TR::ExExp(
     new T::EseqExp(
       new T::MoveStm(
-        new T::MemExp(
-          new T::TempExp(temp)
-        ),
+        new T::TempExp(temp),
         F::externalCall(
+          level->frame,
           new T::NameExp(TEMP::NamedLabel("initArray")),
           new T::ExpList(sizeexpty.exp->UnEx(), new T::ExpList(initexpty.exp->UnEx(), nullptr))
         )
       ),
-      new T::MemExp(
-        new T::TempExp(temp)
-      )
+      new T::TempExp(temp)
     )
   );
 
@@ -1246,7 +1319,7 @@ TR::Exp *FunctionDec::Translate(S::Table<E::EnvEntry> *venv,
 
   std::vector<S::Symbol *> redec;
   for(auto it = this->functions; it; it = it->tail){
-    funLabelList.push_back(TEMP::NewLabel());
+    funLabelList.push_back(TEMP::NamedLabel(it->head->name->Name()));
     TY::Ty *ty = nullptr, *vy = nullptr;
     if(it->head->result == nullptr){
       ty = TY::VoidTy::Instance();
@@ -1300,20 +1373,40 @@ TR::Exp *FunctionDec::Translate(S::Table<E::EnvEntry> *venv,
       }
     }
 
-    U::BoolList *formalsEscape = nullptr;
-    U::IntList *formalsOffset = nullptr;
+    U::BoolList *formalsEscape = nullptr, *cur = nullptr;
+
     for(auto i = it->head->params; i; i = i ->tail){
-      formalsEscape = new U::BoolList(i->head->escape, formalsEscape);
-      formalsOffset = new U::IntList(F::wordSize, formalsOffset);
+      if(formalsEscape == nullptr){
+        formalsEscape = new U::BoolList(i->head->escape, nullptr);
+        cur = formalsEscape;
+      }
+      else
+      {
+        cur->tail = new U::BoolList(i->head->escape, nullptr);
+        cur = cur->tail;
+      }
     }
+
     //静态链作为第一个参数
     formalsEscape = new U::BoolList(true, formalsEscape);
-    formalsOffset = new U::IntList(F::addressSize, formalsOffset);
-    TR::Level *newLevel = TR::Level::NewLevel(level, funLabelList[i_funlabel], formalsEscape, formalsOffset);
+    TR::Level *newLevel = TR::Level::NewLevel(level, funLabelList[i_funlabel], formalsEscape);
+    TR::NxExp *funexp = new TR::NxExp(
+      new T::MoveStm(
+        new T::TempExp(
+          F::RV()
+        ),
+        nullptr
+      )
+    );
+    TR::procEntryExit(newLevel, funexp);//此函数必须要在函数体开始翻译前进行
+    
     TR::AccessList *k = newLevel->Formals()->tail;//跳过第一个静态链参数
+
     for(auto i = it->head->params; i; i = i ->tail){
       venv->Enter(i->head->name, new E::VarEntry(k->head, tenv->Look(i->head->name), false));
+      k = k->tail;
     }
+
     TR::ExpAndTy expty = it->head->body->Translate(venv, tenv, newLevel, label);
     if(it->head->result != nullptr){
       if(expty.ty->kind != tenv->Look(it->head->result)->kind){
@@ -1325,30 +1418,16 @@ TR::Exp *FunctionDec::Translate(S::Table<E::EnvEntry> *venv,
         errormsg.Error(this->pos, "procedure returns value");
       }
     }
-
     //增加返回值
-    TR::Exp *funexp = nullptr;
-    if(it->head->result != nullptr && expty.ty->kind != TY::Ty::VOID){
-      funexp = new TR::NxExp(
-        new T::MoveStm(
-          new T::TempExp(
-            F::RV()
-          ),
-          expty.exp->UnEx()
-        )
-      );
-    }
-    else{
-      funexp = expty.exp;
-    }
-
-    TR::procEntryExit(newLevel, funexp);
+    ((T::MoveStm *)funexp->stm)->src = expty.exp->UnEx();
+ 
+    
     venv->EndScope();
     tenv->EndScope();
 
     i_funlabel++;
   }
-
+      
   exp = new TR::ExExp(new T::ConstExp(0));
 
   return exp;
@@ -1403,18 +1482,15 @@ TR::Exp *VarDec::Translate(S::Table<E::EnvEntry> *venv, S::Table<TY::Ty> *tenv,
     }
   }
 
-  int size = (initexpsty->kind == TY::Ty::INT ? F::wordSize: F::addressSize);
-
-  TR::Access *access = TR::Access::AllocLocal(level, true, size);
+  TR::Access *access = TR::Access::AllocLocal(level, true);
 
   venv->Enter(this->var, new E::VarEntry(access, varty, false));
 
+  T::TempExp *tempExp = new T::TempExp(TEMP::Temp::NewTemp());
   exp = new TR::NxExp(
     new T::MoveStm(
-      new T::MemExp(
-        access->access->ToExp(
-          new T::TempExp(F::FP())
-        )
+      access->access->ToExp(
+        new T::TempExp(F::FP())
       ),
       initexpty.exp->UnEx()
     )

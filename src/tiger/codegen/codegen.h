@@ -11,11 +11,5 @@ namespace CG {
 
 AS::InstrList* Codegen(F::Frame* f, T::StmList* stmList);
 
-void munchStm(T::Stm *stm);
-TEMP::Temp *munchExp(T::Exp *exp);
-TEMP::TempList *munchArgs(int index, T::ExpList *args);
-
-void emit(AS::Instr *instr);
-
 }
 #endif
