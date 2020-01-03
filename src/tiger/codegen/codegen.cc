@@ -3,6 +3,7 @@
 namespace CG {
 
 using TL = TEMP::TempList;
+int i = 0;
 
 AS::InstrList* instrList = nullptr, *last = nullptr;
 F::Frame *frame;
@@ -22,7 +23,7 @@ AS::InstrList* Codegen(F::Frame* f, T::StmList* stmList) {
   for(auto it = stmList; it; it = it->tail){
     munchStm(it->head);
   }
-  frame->length += maxFrameArgsNumber * F::addressSize;
+  frame->maxFrameArgsNumber += maxFrameArgsNumber;
   return F::F_procEntryExit2(instrList);
 }
 
@@ -202,7 +203,7 @@ TEMP::Temp *munchExp(T::Exp *exp) {
       case T::BinOp::DIV_OP:
         leftTemp = munchExp(binopExp->left);
         rightTemp = munchExp(binopExp->right);
-        emit(new AS::MoveInstr("movq `s0 `d0", new TL(F::RV(), nullptr), new TL(leftTemp, nullptr)));
+        emit(new AS::MoveInstr("movq `s0, `d0", new TL(F::RV(), nullptr), new TL(leftTemp, nullptr)));
         returnTemp = F::RV();
         emit(new AS::OperInstr("cqto", nullptr, nullptr, nullptr));
         emit(new AS::OperInstr(opString + " `s0", new TL(F::RV(), new TL(F::RD(), nullptr)), new TL(rightTemp, new TL(F::RV(), nullptr)), nullptr));
@@ -234,7 +235,7 @@ TEMP::Temp *munchExp(T::Exp *exp) {
     TL *argsTL = munchArgs(0, callExp->args);
     std::stringstream assemstream;
     assemstream << "callq " << nameExp->name->Name();
-    emit(new AS::OperInstr(assemstream.str(), new TL(F::RV(), F::CallerSaves()), argsTL, nullptr));
+    emit(new AS::OperInstr(assemstream.str(), new TL(F::RV(), F::CallerSaves()), F::argsReg(), nullptr));
     return F::RV();
   }
   else if(exp->kind == T::Exp::NAME){//一个节点
@@ -322,7 +323,7 @@ void munchStm(T::Stm *stm){
         else{
           TEMP::Temp *temp = munchExp(binoExp);
           TEMP::Temp *srcTemp = munchExp(src);
-          emit(new AS::MoveInstr("movq `s0, (`d0)", new TL(temp, nullptr), new TL(srcTemp, nullptr)));
+          emit(new AS::MoveInstr("movq `s0, (`s1)", nullptr, new TL(srcTemp, new TL(temp, nullptr))));
         }
       }
       else if(menExp->exp->kind == T::Exp::CONST){
@@ -382,7 +383,6 @@ void munchStm(T::Stm *stm){
       else{
         TEMP::Temp *srcTemp = munchExp(src);
         if(srcTemp == F::FP()){
-          fprintf(stdout, "?????");
           emit(new AS::MoveInstr("movq `s0, `d0", new TL(dstTemp, nullptr), new TL(F::SP(), nullptr)));
           std::stringstream assemstream;
           assemstream<< "addq $" << frame->namedFrameLength() << "+" << ", `s0";
@@ -398,7 +398,7 @@ void munchStm(T::Stm *stm){
     T::JumpStm *jumpStm = (T::JumpStm *)stm;
     std::stringstream assemstream;
     assemstream << "jmp " << jumpStm->exp->name->Name();
-    emit(new AS::OperInstr(assemstream.str(), nullptr, nullptr, nullptr));
+    emit(new AS::OperInstr(assemstream.str(), nullptr, nullptr, new AS::Targets(jumpStm->jumps)));
   }
   else if(stm->kind == T::Stm::CJUMP) {
     T::CjumpStm *cjumpStm = (T::CjumpStm *)stm;

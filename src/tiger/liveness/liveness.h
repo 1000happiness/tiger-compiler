@@ -1,11 +1,16 @@
 #ifndef TIGER_LIVENESS_LIVENESS_H_
 #define TIGER_LIVENESS_LIVENESS_H_
 
+#include <vector>
+#include <set>
+#include <algorithm>
+
 #include "tiger/codegen/assem.h"
 #include "tiger/frame/frame.h"
 #include "tiger/frame/temp.h"
 #include "tiger/liveness/flowgraph.h"
 #include "tiger/util/graph.h"
+#include "tiger/util/table.h"
 
 namespace LIVE {
 
@@ -22,9 +27,11 @@ class LiveGraph {
  public:
   G::Graph<TEMP::Temp>* graph;
   MoveList* moves;
+
+  LiveGraph(G::Graph<TEMP::Temp>* graph, MoveList* moves): graph(graph), moves(moves) {}
 };
 
-LiveGraph Liveness(G::Graph<AS::Instr>* flowgraph);
+LiveGraph *Liveness(G::Graph<AS::Instr>* flowgraph);
 
 }  // namespace LIVE
 

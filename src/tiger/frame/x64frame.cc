@@ -2,10 +2,11 @@
 
 #include <string>
 /*
+ * 函数调用时会将栈指针直接调整到调用后的位置，在函数返回前，栈指针的位置都不会修改
  * x64frame的frame结构如下
  * 
- * static link    调用前%rsp的位置
- * -----------
+ * 传递的参数    
+ * -----------      调用前%rsp的位置
  * ret address
  * -----------
  * 接收的参数
@@ -14,25 +15,21 @@
  * -----------
  * 临时变量
  * -----------
- * callersaves    //相当于把callersaves作为一种特殊的临时变量进行保护
- * -----------
- * spill变量
- * -----------
- * 传递的参数      调用后%rsp的位置
- * -----------
+ * 传递的参数      
+ * -----------      调用后%rsp的位置
  * 
  * 如果是叶子节点，则如下
- * static link    调用前%rsp的位置
- * -----------
+ * 
+ * 传递的参数    
+ * -----------      调用前%rsp的位置
  * ret address
  * -----------
  * 接收的参数
  * -----------
  * calleesaves
  * -----------
- * 临时变量
- * -----------
- * spill变量        调用后%rsp的位置   
+ * 临时变量        
+ * -----------      调用后%rsp的位置
  * 
  */
 namespace F {
@@ -43,11 +40,13 @@ const int addressSize = 8;
 class X64Frame : public Frame {
   public:
     F::AccessList *formals;
+    U::BoolList *formalsEscape;
 
     Access *allocLocal(bool escape);
     AccessList *getFormals();
     TEMP::Label *getLabel();
     std::string namedFrameLength();
+    U::BoolList *getFormalsEscape();
 };
 
 class InFrameAccess : public Access {
@@ -94,6 +93,10 @@ std::string X64Frame::namedFrameLength(){
   return std::string(this->getLabel()->Name()) + std::string("_frameSize");
 }
 
+U::BoolList *X64Frame::getFormalsEscape(){
+  return this->formalsEscape;
+}
+
 T::Exp* InFrameAccess::ToExp(T::Exp* framePtr) const{
   T::Exp *exp = new T::MemExp(
     new T::BinopExp(
@@ -116,6 +119,7 @@ Frame *newFrame(TEMP::Label *name, U::BoolList *formalsEscape){
   x64frame->label = name;
   x64frame->length = 0;
   x64frame->maxFrameArgsNumber = 0;
+  x64frame->formalsEscape = formalsEscape;
   int offset = 0;
   AccessList *tempAccessList = nullptr, *cur = nullptr;
 
@@ -153,82 +157,29 @@ T::Exp *externalCall(Frame *frame, T::NameExp *fun, T::ExpList *args){
   return exp;
 }
 
-//将Call通过frame实现是因为可能需要保存callersaves
+//将Call通过frame实现是因为call的实现可能与机器相关
 T::Exp *normalCall(Frame *frame, T::NameExp *fun, T::ExpList *args){
-  TEMP::TempList *callerSaves = CallerSaves();
-  
-  T::SeqStm *saveRegStms = nullptr;
-  T::SeqStm *loadRegStms = nullptr;
-  T::SeqStm *saveCur = nullptr;
-  T::SeqStm *loadCur = nullptr;
-
-  for(TEMP::TempList *it = callerSaves; it; it = it->tail){
-    Access *access = frame->allocLocal(true);
-    T::MoveStm *saveStm = new T::MoveStm(
-      access->ToExp(new T::TempExp(FP())),
-      new T::TempExp(it->head)
-    );
-    T::MoveStm *loadStm = new T::MoveStm(
-      new T::TempExp(it->head),
-      access->ToExp(new T::TempExp(FP()))
-    );
-    if(it == callerSaves){//第一个
-      saveRegStms = new T::SeqStm(
-        saveStm,
-        nullptr
-      );
-      saveCur = saveRegStms;
-      loadRegStms = new T::SeqStm(
-        loadStm,
-        nullptr
-      );
-      loadCur = loadRegStms;
-    }
-    else if(it->tail == nullptr){//最后一个
-      saveCur->right = saveStm;
-      loadCur->right = loadStm;
-    }
-    else{
-      saveCur->right = new T::SeqStm(
-        saveStm,
-        nullptr
-      );
-      saveCur = (T::SeqStm *)saveCur->right;
-      loadCur->right = new T::SeqStm(
-        loadStm,
-        nullptr
-      );
-      loadCur = (T::SeqStm *)loadCur->right;
-    }
-  }
-
   T::Exp *exp = nullptr;
-
   exp = new T::EseqExp(
-    new T::SeqStm(
-      saveRegStms,
-      new T::SeqStm(
-        new T::MoveStm(
-          new T::TempExp(RV()),
-          new T::CallExp(fun, args)
-        ),
-        loadRegStms
-      )
+    new T::MoveStm(
+      new T::TempExp(RV()),
+      new T::CallExp(fun, args)
     ),
     new T::TempExp(RV())
   );
 
   return exp;
 }
-//保护调用者保护的寄存器，在这个步骤完成之后，栈指针指向内存中保存的最后一个调用者保存的寄存器
 
 T::Stm *F_procEntryExit1(Frame *frame, T::Stm *body){
   //接收参数的指令
   T::SeqStm *prologue = nullptr;
   T::SeqStm *prologueCur = nullptr;
   AccessList *formals = frame->getFormals();
+  U::BoolList *escape = frame->getFormalsEscape();
   for(AccessList *it = formals; it; it = it->tail) {
-    Access *access = frame->allocLocal(true);
+    Access *access = frame->allocLocal(escape->head);
+    escape = escape->tail;
     T::MoveStm *saveStm = new T::MoveStm(
       access->ToExp(new T::TempExp(FP())),
       it->head->ToExp(new T::TempExp(FP()))
@@ -250,13 +201,12 @@ T::Stm *F_procEntryExit1(Frame *frame, T::Stm *body){
     }
   }
   
-  //将被调用者保存的寄存器存入栈帧中，并在结尾恢复这些寄存器，这个文件中已经明确所使用的架构为X64，所以calleesave的寄存器数量必然为6个（大于1个）
-  TEMP::TempList *calleeSaves = CalleeSaves();
+  TEMP::TempList *regs = CalleeSaves();
   T::SeqStm *saveRegStms = nullptr;
   T::SeqStm *loadRegStms = nullptr;
   T::SeqStm *saveCur = nullptr;
   T::SeqStm *loadCur = nullptr;
-  for(TEMP::TempList *it = calleeSaves; it; it = it->tail){
+  for(TEMP::TempList *it = regs; it; it = it->tail){
     Access *access = frame->allocLocal(false);
     T::MoveStm *saveStm = new T::MoveStm(
       access->ToExp(nullptr),
@@ -266,7 +216,7 @@ T::Stm *F_procEntryExit1(Frame *frame, T::Stm *body){
       new T::TempExp(it->head),
       access->ToExp(nullptr)
     );
-    if(it == calleeSaves){//第一个
+    if(it == regs){//第一个
       saveRegStms = new T::SeqStm(
         saveStm,
         nullptr
@@ -318,6 +268,7 @@ AS::InstrList *F_procEntryExit2(AS::InstrList *body){
 }
 
 AS::Proc *F_procEntryExit3(Frame *frame, AS::InstrList *il){
+  frame->length = frame->length + frame->maxFrameArgsNumber * F::addressSize;
   std::stringstream prologueStream;
   TEMP::Label *newLabel = TEMP::NewLabel();
   prologueStream << frame->label->Name() << ":\n";
@@ -357,14 +308,10 @@ AS::Proc *F_procEntryExit3(Frame *frame, AS::InstrList *il){
       std::stringstream tempstream((*assemAddress).substr(addLocation + 1, bracketLocation - addLocation - 1));
       int offset = 0;
       tempstream >> offset;
-      // fprintf(stdout, "%d\n",offset);
-      // fflush(stdout);
       frameAssemstream << offset + frame->length;
       frameAssemstream << (*assemAddress).substr(bracketLocation);
     }
     else{
-      // fprintf(stdout, "???%s\n", (*assemAddress).c_str());
-      // fflush(stdout);
       if(bracketLocation == -1){
         frameAssemstream << frame->length;
         frameAssemstream << (*assemAddress).substr((*assemAddress).find(","));
@@ -540,7 +487,6 @@ TEMP::Map * FrameTempMap(){
     tempMap->Enter(RD(), new std::string("%rdx"));
     tempMap->Enter(SI(), new std::string("%rsi"));
     tempMap->Enter(DI(), new std::string("%rdi"));
-    tempMap->Enter(FP(), new std::string("%rbp"));
     tempMap->Enter(FP_REAL(), new std::string("%rbp"));
     tempMap->Enter(SP(), new std::string("%rsp"));
     tempMap->Enter(R8(), new std::string("%r8"));
@@ -554,6 +500,31 @@ TEMP::Map * FrameTempMap(){
     tempMap->Enter(R16(), new std::string("%r16"));
   }
   return tempMap;
+}
+
+//所有可用于着色的寄存器，不包括%rsp
+TEMP::TempList *Regs(){
+  static TEMP::TempList *regsTempList = nullptr;
+  if(regsTempList == nullptr){
+    regsTempList = 
+      new TEMP::TempList(DI(),
+      new TEMP::TempList(SI(),
+      new TEMP::TempList(RC(),
+      new TEMP::TempList(RD(),
+      new TEMP::TempList(R8(),
+      new TEMP::TempList(R9(),
+      new TEMP::TempList(RV(),
+      new TEMP::TempList(R10(),
+      new TEMP::TempList(R11(),
+      new TEMP::TempList(RB(),
+      new TEMP::TempList(FP_REAL(),
+      new TEMP::TempList(R12(),
+      new TEMP::TempList(R13(),
+      new TEMP::TempList(R14(),
+      new TEMP::TempList(R15(), 
+      nullptr)))))))))))))));
+  }
+  return regsTempList;
 }
 
 TEMP::TempList *argsReg(){
@@ -577,10 +548,13 @@ TEMP::TempList *CallerSaves(){
     CallerSavesTempList = 
       new TEMP::TempList(R10(),
       new TEMP::TempList(R11(),
+      new TEMP::TempList(DI(),
+      new TEMP::TempList(SI(),
       new TEMP::TempList(RC(),
       new TEMP::TempList(RD(),
+      new TEMP::TempList(R8(),
       new TEMP::TempList(R9(),
-      nullptr)))));
+      nullptr))))))));
   }
   return CallerSavesTempList;
 }

@@ -2,187 +2,248 @@
 
 namespace RA {
 AS::InstrList *newIl, *newIlCur;
-TEMP::Map *inframe, *coloring;
-TEMP::Map *frameTM = F::FrameTempMap();
+TEMP::Map *inframeRegsMap, *coloring;
+TEMP::Map *frameTempMap = nullptr;
+F::Frame *frame = nullptr;
+TEMP::TempList *regs = nullptr;
 
-void moveInstregAlloc(F::Frame* f, AS::MoveInstr *moveInstr);
-void operInstregAlloc(F::Frame* f, AS::OperInstr *operInstr);
-void labelInstregAlloc(F::Frame* f, AS::LabelInstr *labelInstr);
-
+void initialRegAlloc(F::Frame* f, AS::InstrList* il);
+void main();
+void rewriteProgram(TEMP::TempList *spill);
+void moveInstrInframe(F::Frame* f, AS::MoveInstr *moveInstr, std::set<TEMP::Temp *> *spillSet);
+void labelInstrInframe(F::Frame* f, AS::LabelInstr *labelInstr, std::set<TEMP::Temp *> *spillSet);
+void operInstrInframe(F::Frame* f, AS::OperInstr *operInstr, std::set<TEMP::Temp *> *spillSet);
 void emit(AS::Instr *instr);
-bool IsCalleeSaves(TEMP::Temp *temp);
-bool IsCallerSaves(TEMP::Temp *temp);
-void frameInstr(std::string assem, TEMP::TempList* dst, TEMP::TempList* src, AS::Targets* jumps);
+void removeSameReg();
+bool IsSpilledTempExisted(TEMP::TempList *src, TEMP::TempList *dst, std::set<TEMP::Temp *> *spillSet);
+void replaceSpilledReg(std::string assem, TEMP::TempList* dst, TEMP::TempList* src, AS::Targets* jumps);
 TEMP::Temp* nth_temp(TEMP::TempList* list, int i);
 TEMP::Label* nth_label(TEMP::LabelList* list, int i);
 void changeNthTemp(TEMP::TempList* list, int i, TEMP::Temp *newTemp);
 
-Result RegAlloc(F::Frame* f, AS::InstrList* il) {
-  newIl = nullptr;
-  newIlCur = nullptr;
-  inframe = TEMP::Map::Empty();
-  
-  for(AS::InstrList *it = il; it; it=it->tail){
-    // it->head->Print(stdout, TEMP::Map::LayerMap(F::FrameTempMap(), TEMP::Map::Name()));
-    // fflush(stdout);
-    if(it->head->kind == AS::Instr::MOVE){
-      moveInstregAlloc(f, (AS::MoveInstr *)it->head);
-    }
-    else if(it->head->kind == AS::Instr::OPER){
-      operInstregAlloc(f, (AS::OperInstr *)it->head);
-    }
-    else if(it->head->kind == AS::Instr::LABEL){
-      labelInstregAlloc(f, (AS::LabelInstr *)it->head);
-    }
-    
-    // newIlCur->Print(stdout, TEMP::Map::LayerMap(F::FrameTempMap(), TEMP::Map::Name()));
-    // fflush(stdout);
-  }
+Result RegAlloc(F::Frame* f, AS::InstrList* rawIl) {
+  initialRegAlloc(f, rawIl);
+
+  main();
+
   Result allocResult = Result(coloring ,newIl);
   return allocResult;
 }
 
-void moveInstregAlloc(F::Frame* f, AS::MoveInstr *moveInstr){
-  if(moveInstr->assem.find("(") == -1 && moveInstr->assem.find("$") == -1){//movq regA, regB 只用于lab5
-    // moveInstr->assem = "111111" + moveInstr->assem;
-    // emit(moveInstr);
-    if(moveInstr->dst->head == moveInstr->src->head){
-      return ;
-    }
-    else if(IsCalleeSaves(moveInstr->dst->head) || IsCalleeSaves(moveInstr->src->head)){
-      return ;
-    }
-    else if(frameTM->Look(moveInstr->src->head) != nullptr){
-      if(frameTM->Look(moveInstr->dst->head) != nullptr){
-        emit(moveInstr);
-      }
-      else{
-        if(inframe->Look(moveInstr->dst->head) == nullptr){
-          f->length += F::addressSize;
-          std::stringstream assemStream;
-          assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
-          emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(moveInstr->src->head, nullptr)));
-          inframe->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
-        }
-        else{
-          emit(new AS::MoveInstr("movq `s0, " + *inframe->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(moveInstr->src->head, nullptr)));
-        }
-      }
-      return ;
-    }
-    else if(frameTM->Look(moveInstr->dst->head) != nullptr){
-      emit(new AS::MoveInstr("movq " + *inframe->Look(moveInstr->src->head) + ", `d0", new TEMP::TempList(moveInstr->dst->head, nullptr),nullptr));
-    }
-    else{
-      emit(new AS::MoveInstr("movq " + *inframe->Look(moveInstr->src->head) + ", `d0", new TEMP::TempList(F::R10(), nullptr),nullptr));
-      if(inframe->Look(moveInstr->dst->head) == nullptr){
-        f->length += F::addressSize;
-        std::stringstream assemStream;
-        assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
-        emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(F::R10(), nullptr)));
-        inframe->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
-      }
-      else{
-        emit(new AS::MoveInstr("movq `s0, " + *inframe->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(F::R10(), nullptr)));
-      }
-    }
-  }
-  else if(moveInstr->assem.find("(") == -1 && moveInstr->assem.find("$") != -1){//movq $1, regA 只用于lab5
-    if(frameTM->Look(moveInstr->dst->head) != nullptr){
-      emit(moveInstr);
-    }
-    else{
-      if(inframe->Look(moveInstr->dst->head) == nullptr){
-        f->length += F::addressSize;
-        std::stringstream assemStream;
-        assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
-        emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(F::R10(), nullptr), nullptr));
-        emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(F::R10(), nullptr)));
-        inframe->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
-      }
-      else{
-        emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(F::R10(), nullptr), nullptr));
-        emit(new AS::MoveInstr("movq `s0, " + *inframe->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(F::R10(), nullptr)));
-      }
-    }
-  }
-  else if(moveInstr->assem.find("(") != -1 && moveInstr->assem.find("(") < moveInstr->assem.find(",") && moveInstr->assem.find("%rip") == -1){//movq 1(regB), regA
-    // moveInstr->assem = "333333" + moveInstr->assem;
-    // emit(moveInstr);
-    if(IsCallerSaves(moveInstr->dst->head)){//只用于lab5
-      if(frameTM->Look(moveInstr->src->head) != nullptr){
-        emit(moveInstr);
-      }
-      else{
-        emit(new AS::MoveInstr("movq " + *inframe->Look(moveInstr->src->head) + ", `d0", new TEMP::TempList(F::R10(), nullptr), nullptr));
-        emit(new AS::MoveInstr(moveInstr->assem, moveInstr->dst, new TEMP::TempList(F::R10(), nullptr)));
-      }
-    }
-    else{
-      if(frameTM->Look(moveInstr->src->head) != nullptr){
-        emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(F::R10(), nullptr), moveInstr->src));
-        if(inframe->Look(moveInstr->dst->head) == nullptr){
-          f->length += F::addressSize;
-          std::stringstream assemStream;
-          assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
-          emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(F::R10(), nullptr)));
-          inframe->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
-        }
-        else{
-          emit(new AS::MoveInstr("movq `s0, " + *inframe->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(F::R10(), nullptr)));
-        }
-      }
-      else{
-        emit(new AS::MoveInstr("movq " + *inframe->Look(moveInstr->src->head) + ", `d0", new TEMP::TempList(F::R10(), nullptr), nullptr));
-        if(inframe->Look(moveInstr->dst->head) == nullptr){
-          f->length += F::addressSize;
-          std::stringstream assemStream;
-          assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
-          emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(F::R11(), nullptr), new TEMP::TempList(F::R10(), nullptr)));
-          emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(F::R11(), nullptr)));
-          inframe->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
-        }
-        else{
-          emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(F::R11(), nullptr), new TEMP::TempList(F::R10(), nullptr)));
-          emit(new AS::MoveInstr("movq `s0, " + *inframe->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(F::R11(), nullptr)));
-        }
-      }
-    }
-  }
-  else if(moveInstr->assem.find("%rip") != -1){
-    if(frameTM->Look(moveInstr->dst->head) != nullptr){
-      emit(moveInstr);
-    }
-    else{
-      if(inframe->Look(moveInstr->dst->head) == nullptr){
-        f->length += F::addressSize;
-        std::stringstream assemStream;
-        assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
-        emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(F::R10(), nullptr), nullptr));
-        emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(F::R10(), nullptr)));
-        inframe->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
-      }
-      else{
-        emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(F::R10(), nullptr), nullptr));
-        emit(new AS::MoveInstr("movq `s0, " + *inframe->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(F::R10(), nullptr)));
-      }
-    }
-  }
-  else{
-    //TEMP::TempList *callersaves = F::CallerSaves();
-    frameInstr(moveInstr->assem, moveInstr->dst, moveInstr->src, nullptr);
-    //emit(moveInstr);
+void initialRegAlloc(F::Frame* f, AS::InstrList* rawIl){
+  newIl = nullptr;
+  newIlCur = nullptr;
+  inframeRegsMap = TEMP::Map::Empty();
+  TEMP::TempList *regsCur = nullptr;// the calleeSave will be used after argsReg and CallerSaves
+  regs = F::Regs();
+
+  frame = f;
+  for(auto it = rawIl; it; it = it->tail){
+    emit(it->head);
   }
 }
 
-void labelInstregAlloc(F::Frame* f, AS::LabelInstr *labelInstr){
+void main(){
+  LIVE::LiveGraph *liveGraph = LIVE::Liveness(FG::AssemFlowGraph(newIl));
+  // liveGraph->graph->Show(stdout, liveGraph->graph->Nodes(), nullptr);
+  TEMP::Map *frameTempMap = F::FrameTempMap();
+  TEMP::Map *initial = TEMP::Map::Empty();//deepcopy frame temp map
+  for(auto temp = regs; temp; temp = temp->tail){
+    initial->Enter(temp->head, frameTempMap->Look(temp->head));
+  }
+  initial->Enter(F::SP(), new std::string("%rsp"));
+
+  COL::Result *colResult = COL::Color(liveGraph->graph, initial, regs, liveGraph->moves);
+  coloring = colResult->coloring;
+  
+  rewriteProgram(colResult->spills);
+  // newIl->Print(stdout, TEMP::Map::Name());
+  if(colResult->spills != nullptr){ 
+    main();
+  }
+  else{
+    // newIl->Print(stdout, TEMP::Map::Name());
+    removeSameReg();
+    // newIl->Print(stdout, TEMP::Map::Name());
+    // newIl->Print(stdout, coloring);
+  }
+}
+
+void rewriteProgram(TEMP::TempList *spills){
+  std::set<TEMP::Temp *> *spillSet = new std::set<TEMP::Temp *>();
+  for(auto temp = spills; temp; temp = temp->tail){
+    spillSet->insert(temp->head);
+    // printf("rewrite spill %d\n", temp->head->Int());
+  }
+
+  AS::InstrList *tempIl = newIl;
+  newIl = nullptr;
+
+  for(AS::InstrList *it = tempIl; it; it=it->tail){
+    // it->head->Print(stdout, TEMP::Map::Name());
+    if(it->head->kind == AS::Instr::MOVE){
+      moveInstrInframe(frame, (AS::MoveInstr *)it->head, spillSet);
+    }
+    else if(it->head->kind == AS::Instr::OPER){
+      operInstrInframe(frame, (AS::OperInstr *)it->head, spillSet);
+    }
+    else if(it->head->kind == AS::Instr::LABEL){
+      labelInstrInframe(frame, (AS::LabelInstr *)it->head, spillSet);
+    }
+    // newIlCur->Print(stdout, TEMP::Map::Name());
+  }
+
+  delete spillSet;
+}
+
+void moveInstrInframe(F::Frame* f, AS::MoveInstr *moveInstr, std::set<TEMP::Temp *> *spillSet){
+  if(IsSpilledTempExisted(moveInstr->src, moveInstr->dst, spillSet)){
+    if(moveInstr->assem.find("(") == -1 && moveInstr->assem.find("$") == -1){// mov regB, regA
+      if(coloring->Look(moveInstr->src->head) != nullptr){// src colored
+        if(coloring->Look(moveInstr->dst->head) != nullptr){
+          emit(moveInstr);
+        }
+        else{
+          if(inframeRegsMap->Look(moveInstr->dst->head) == nullptr){
+            f->length += F::addressSize;
+            std::stringstream assemStream;
+            assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
+            emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(moveInstr->src->head, new TEMP::TempList(F::SP(), nullptr))));
+            inframeRegsMap->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
+          }
+          else{
+            emit(new AS::MoveInstr("movq `s0, " + *inframeRegsMap->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(moveInstr->src->head, new TEMP::TempList(F::SP(), nullptr))));
+          }
+        }
+        return ;
+      }
+      else if(coloring->Look(moveInstr->dst->head) != nullptr){// dst colored
+        emit(new AS::MoveInstr("movq " + *inframeRegsMap->Look(moveInstr->src->head) + ", `d0", new TEMP::TempList(moveInstr->dst->head, nullptr),new TEMP::TempList(F::SP(), nullptr)));
+      }
+      else{// src not colored, dst not colored
+        TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
+        emit(new AS::MoveInstr("movq " + *inframeRegsMap->Look(moveInstr->src->head) + ", `d0", new TEMP::TempList(newTemp, nullptr), new TEMP::TempList(F::SP(), nullptr)));
+        if(inframeRegsMap->Look(moveInstr->dst->head) == nullptr){
+          f->length += F::addressSize;
+          std::stringstream assemStream;
+          assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
+          emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(newTemp, new TEMP::TempList(F::SP(), nullptr))));
+          inframeRegsMap->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
+        }
+        else{
+          emit(new AS::MoveInstr("movq `s0, " + *inframeRegsMap->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(newTemp, new TEMP::TempList(F::SP(), nullptr))));
+        }
+      }
+    }
+    else if(moveInstr->assem.find("(") == -1 && moveInstr->assem.find("$") != -1){//movq $1, regA 
+      if(coloring->Look(moveInstr->dst->head) != nullptr){ // dst colored
+        emit(moveInstr);
+      }
+      else{// dst not colored
+        TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
+        if(inframeRegsMap->Look(moveInstr->dst->head) == nullptr){
+          f->length += F::addressSize;
+          std::stringstream assemStream;
+          assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
+          emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(newTemp, nullptr), nullptr));
+          emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(newTemp, nullptr)));
+          inframeRegsMap->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
+        }
+        else{
+          emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(newTemp, nullptr), nullptr));
+          emit(new AS::MoveInstr("movq `s0, " + *inframeRegsMap->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(newTemp, new TEMP::TempList(F::SP(), nullptr))));
+        }
+      }
+    }
+    else if(moveInstr->assem.find("(") != -1 && moveInstr->assem.find("(") < moveInstr->assem.find(",") && moveInstr->assem.find("%rip") == -1){//movq 1(regB), regA
+      if(coloring->Look(moveInstr->dst->head) != nullptr){//dst colored
+        if(coloring->Look(moveInstr->src->head) != nullptr){// src colored
+          emit(moveInstr);
+        }
+        else{// src not colored
+          TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
+          emit(new AS::MoveInstr("movq " + *inframeRegsMap->Look(moveInstr->src->head) + ", `d0", new TEMP::TempList(newTemp, nullptr), new TEMP::TempList(F::SP(), nullptr)));
+          emit(new AS::MoveInstr(moveInstr->assem, moveInstr->dst, new TEMP::TempList(newTemp, nullptr)));
+        }
+      }
+      else{//dst not colored
+        if(coloring->Look(moveInstr->src->head) != nullptr){// src colored
+          TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
+          emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(newTemp, nullptr), moveInstr->src));
+          if(inframeRegsMap->Look(moveInstr->dst->head) == nullptr){
+            f->length += F::addressSize;
+            std::stringstream assemStream;
+            assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
+            emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(newTemp, new TEMP::TempList(F::SP(), nullptr))));
+            inframeRegsMap->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
+          }
+          else{
+            emit(new AS::MoveInstr("movq `s0, " + *inframeRegsMap->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(newTemp, new TEMP::TempList(F::SP(), nullptr))));
+          }
+        }
+        else{// src not colored
+          TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
+          emit(new AS::MoveInstr("movq " + *inframeRegsMap->Look(moveInstr->src->head) + ", `d0", new TEMP::TempList(newTemp, nullptr), nullptr));
+          if(inframeRegsMap->Look(moveInstr->dst->head) == nullptr){
+            f->length += F::addressSize;
+            std::stringstream assemStream;
+            assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
+            emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(newTemp, nullptr)));
+            inframeRegsMap->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
+          }
+          else{
+            emit(new AS::MoveInstr("movq `s0, " + *inframeRegsMap->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(newTemp, nullptr)));
+          }
+        }
+      }
+    }
+    else if(moveInstr->assem.find("%rip") != -1){//leaq L1(%rip), regA
+      if(coloring->Look(moveInstr->dst->head) != nullptr){
+        emit(moveInstr);
+      }
+      else{
+        TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
+        if(coloring->Look(moveInstr->dst->head) == nullptr){
+          f->length += F::addressSize;
+          std::stringstream assemStream;
+          assemStream << f->namedFrameLength() << "+" << -f->length << "(%rsp)";
+          emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(newTemp, nullptr), nullptr));
+          emit(new AS::MoveInstr("movq `s0, " + assemStream.str(), nullptr, new TEMP::TempList(newTemp, nullptr)));
+          inframeRegsMap->Enter(moveInstr->dst->head, new std::string(assemStream.str()));
+        }
+        else{
+          emit(new AS::MoveInstr(moveInstr->assem, new TEMP::TempList(newTemp, nullptr), nullptr));
+          emit(new AS::MoveInstr("movq `s0, " + *inframeRegsMap->Look(moveInstr->dst->head), nullptr, new TEMP::TempList(newTemp, nullptr)));
+        }
+      }
+    }
+    else{// mov regB, 1(regA) | mov $4, 1(regA)
+      replaceSpilledReg(moveInstr->assem, moveInstr->dst, moveInstr->src, nullptr);
+    }
+  }
+  else{
+    emit(moveInstr);
+  }
+}
+
+void labelInstrInframe(F::Frame* f, AS::LabelInstr *labelInstr, std::set<TEMP::Temp *> *spillSet){
   emit(labelInstr);
   return ;
 }
 
-void operInstregAlloc(F::Frame* f, AS::OperInstr *operInstr){
-  frameInstr(operInstr->assem, operInstr->dst, operInstr->src, nullptr);
-  //emit(operInstr);
+void operInstrInframe(F::Frame* f, AS::OperInstr *operInstr, std::set<TEMP::Temp *> *spillSet){
+  if(IsSpilledTempExisted(operInstr->src, operInstr->dst, spillSet)){
+    replaceSpilledReg(operInstr->assem, operInstr->dst, operInstr->src, nullptr);
+  }
+  else{
+    // if(operInstr->assem.find("call") != -1){
+    //   callEmit(f, operInstr);
+    // }
+    // else{
+    //   emit(operInstr);
+    // }
+    emit(operInstr);
+  }
   return ;
 }
 
@@ -197,42 +258,43 @@ void emit(AS::Instr *instr){
   }
 }
 
-bool IsCalleeSaves(TEMP::Temp *temp){
-  static TEMP::Map *calleesavesMap = nullptr;
-  if(calleesavesMap == nullptr){
-    calleesavesMap = TEMP::Map::Empty();
-    for(auto it = F::CalleeSaves(); it; it= it->tail){
-      calleesavesMap->Enter(it->head, new std::string(""));
+bool IsSpilledTempExisted(TEMP::TempList *src, TEMP::TempList *dst, std::set<TEMP::Temp *> *spillSet){
+  for(auto temp = src; temp; temp = temp->tail){
+    if(spillSet->find(temp->head) != spillSet->end()){
+      return true;
     }
   }
-
-  if(calleesavesMap->Look(temp) == nullptr){
-    return false;
+  for(auto temp = dst; temp; temp = temp->tail){
+    if(spillSet->find(temp->head) != spillSet->end()){
+      return true;
+    }
   }
-  else{
-    return true;
+  return false;
+}
+
+void removeSameReg(){
+  AS::InstrList *tempIl = newIl;
+  newIl = nullptr;
+  for(AS::InstrList *it = tempIl; it; it=it->tail){
+    if(it->head->kind == AS::Instr::MOVE){
+      AS::MoveInstr *moveInstr = (AS::MoveInstr *)it->head;
+      if(moveInstr->assem.find("(") == -1 && moveInstr->assem.find("$") == -1){
+        if(coloring->Look(moveInstr->src->head) != coloring->Look(moveInstr->dst->head)){
+          emit(moveInstr);
+        }
+      }
+      else{
+        emit(it->head);
+      }
+    }
+    else{
+      emit(it->head);
+    }
   }
 }
 
-bool IsCallerSaves(TEMP::Temp *temp){
-  static TEMP::Map *callersavesMap = nullptr;
-  if(callersavesMap == nullptr){
-    callersavesMap = TEMP::Map::Empty();
-    for(auto it = F::CallerSaves(); it; it= it->tail){
-      callersavesMap->Enter(it->head, new std::string(""));
-    }
-  }
-
-  if(callersavesMap->Look(temp) == nullptr){
-    return false;
-  }
-  else{
-    return true;
-  }
-}
-
-void frameInstr(std::string assem, TEMP::TempList* dst, TEMP::TempList* src, AS::Targets* jumps){
-  TEMP::TempList *callersaves = F::CallerSaves();
+void replaceSpilledReg(std::string assem, TEMP::TempList* dst, TEMP::TempList* src, AS::Targets* jumps){
+  
   TEMP::Temp *dstTemp = nullptr;
   TEMP::Temp *aternativeTemp = nullptr; 
   for (int i = 0; i < assem.size(); i++) {
@@ -244,21 +306,21 @@ void frameInstr(std::string assem, TEMP::TempList* dst, TEMP::TempList* src, AS:
           i++;
           int n = assem.at(i) - '0';
           TEMP::Temp *temp = nth_temp(src, n);
-          if(frameTM->Look(temp) == nullptr){
-            emit(new AS::MoveInstr("movq " + *inframe->Look(temp) + ", `d0", new TEMP::TempList(callersaves->head, nullptr), nullptr));
-            changeNthTemp(src, n, callersaves->head);
-            callersaves = callersaves->tail;
+          if(coloring->Look(temp) == nullptr){
+            TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
+            emit(new AS::MoveInstr("movq " + *inframeRegsMap->Look(temp) + ", `d0", new TEMP::TempList(newTemp, nullptr), nullptr));
+            changeNthTemp(src, n, newTemp);
           }
         } break;
         case 'd': {
           i++;
           int n = assem.at(i) - '0';
           dstTemp = nth_temp(dst, n);
-          if(frameTM->Look(dstTemp) == nullptr){
-            emit(new AS::MoveInstr("movq " + *inframe->Look(dstTemp) + ", `d0", new TEMP::TempList(callersaves->head, nullptr),nullptr));
-            changeNthTemp(dst, n, callersaves->head);
-            aternativeTemp = callersaves->head;
-            callersaves = callersaves->tail;
+          if(coloring->Look(dstTemp) == nullptr){
+            TEMP::Temp *newTemp = TEMP::Temp::NewTemp();
+            emit(new AS::MoveInstr("movq " + *inframeRegsMap->Look(dstTemp) + ", `d0", new TEMP::TempList(newTemp, nullptr),nullptr));
+            changeNthTemp(dst, n, newTemp);
+            aternativeTemp = newTemp;
           }
         } break;
         case 'j':
@@ -273,7 +335,7 @@ void frameInstr(std::string assem, TEMP::TempList* dst, TEMP::TempList* src, AS:
   }
   emit(new AS::OperInstr(assem, dst, src, jumps));
   if(aternativeTemp != nullptr){
-    emit(new AS::MoveInstr("movq `s0, " + *inframe->Look(dstTemp), nullptr, new TEMP::TempList(aternativeTemp, nullptr)));
+    emit(new AS::MoveInstr("movq `s0, " + *inframeRegsMap->Look(dstTemp), nullptr, new TEMP::TempList(aternativeTemp, nullptr)));
   }
 }
 

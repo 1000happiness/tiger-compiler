@@ -25,7 +25,7 @@ TEMP::Map* temp_map;
 void do_proc(FILE* out, F::ProcFrag* procFrag) {
   temp_map = F::FrameTempMap();
 
-   printf("doProc for function %s:\n", procFrag->frame->label->Name().c_str());
+  printf("doProc for function %s:\n", procFrag->frame->label->Name().c_str());
   //  if(procFrag->frame->label->Name() == "init"){
   //   (new T::StmList(procFrag->body, nullptr))->Print(stdout);
   // }
@@ -49,14 +49,11 @@ void do_proc(FILE* out, F::ProcFrag* procFrag) {
   // stmList->Print(stdout);
   // printf("-------====trace=====-----\n");
   AS::InstrList* iList = CG::Codegen(procFrag->frame, stmList); /* 9 */
-  
-  //iList->Print(stdout, TEMP::Map::LayerMap(temp_map, TEMP::Map::Name()));
-  
   //  AS_printInstrList(stdout, iList, Temp::Map::LayerMap(temp_map,
   //  Temp_name()));
 
   // printf("----======before RA=======-----\n");
-  RA::Result allocation = RA::RegAlloc(procFrag->frame, iList); /* 11 */
+  RA::Result allocation = RA::RegAlloc(procFrag->frame, iList); /* 11 */ 
   //  printf("----======after RA=======-----\n");
 
   AS::Proc* proc = F::F_procEntryExit3(procFrag->frame, allocation.il);
@@ -67,10 +64,9 @@ void do_proc(FILE* out, F::ProcFrag* procFrag) {
   // prologue
   fprintf(out, "%s", proc->prolog.c_str());
   // body
-  proc->body->Print(out, TEMP::Map::LayerMap(temp_map, TEMP::Map::Name()));
-  //proc->body->Print(stdout, TEMP::Map::LayerMap(temp_map, TEMP::Map::Name()));
+  proc->body->Print(out, allocation.coloring);
+  proc->body->Print(stdout, allocation.coloring);
   
-  // proc->body->Print(stdout, TEMP::Map::LayerMap(temp_map, allocation.coloring));
   // epilog
   fprintf(out, "%s", proc->epilog.c_str());
   fprintf(out, ".size %s, .-%s\n", procName.c_str(), procName.c_str());
@@ -116,7 +112,7 @@ int main(int argc, char** argv) {
 
   // Lab 6: escape analysis
   // If you have implemented escape analysis, uncomment this
-  // ESC::FindEscape(absyn_root); /* set varDec's escape field */
+  ESC::FindEscape(absyn_root); /* set varDec's escape field */
 
   frags = TR::TranslateProgram(absyn_root);
   if (errormsg.anyErrors) return 1; /* don't continue */

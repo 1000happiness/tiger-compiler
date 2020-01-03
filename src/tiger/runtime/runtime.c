@@ -33,6 +33,20 @@ int stringEqual(struct string *s, struct string *t) {
   return 1;
 }
 
+int stringLess(struct string *s, struct string *t) {
+  int i;
+  for (i = 0; i < s->length && i < t->length; i++)
+    if (s->chars[i] >= t->chars[i]) return 0;
+  return 1;
+}
+
+int stringGreater(struct string *s, struct string *t) {
+  int i;
+  for (i = 0; i < s->length && i < t->length; i++)
+    if (s->chars[i] <= t->chars[i]) return 0;
+  return 1;
+}
+
 void print(struct string *s) {
   int i;
   unsigned char *p = s->chars;

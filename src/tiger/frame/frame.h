@@ -42,6 +42,7 @@ class Frame {
     virtual AccessList *getFormals() = 0;
     virtual TEMP::Label *getLabel() = 0;
     virtual std::string namedFrameLength() = 0;
+    virtual U::BoolList *getFormalsEscape() = 0;
 };
 
 /*
@@ -110,6 +111,7 @@ TEMP::Temp *R14();//r14
 TEMP::Temp *R15();//r15
 TEMP::Temp *R16();//r16
 TEMP::Map * FrameTempMap();
+TEMP::TempList *Regs();
 TEMP::TempList *argsReg();
 TEMP::TempList *CallerSaves();
 TEMP::TempList *CalleeSaves();

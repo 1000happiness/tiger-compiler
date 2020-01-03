@@ -37,8 +37,6 @@ class AccessList {
   AccessList(Access *head, AccessList *tail) : head(head), tail(tail) {}
 };
 
-
-
 /*-------------------------------------------------------------------------------*/
 
 class Level {
@@ -551,7 +549,6 @@ TR::ExpAndTy CallExp::Translate(S::Table<E::EnvEntry> *venv,
         else{
           calllevel = calllevel->parent;
           staticLink = calllevel->Formals()->head->access->ToExp(staticLink);
-          printf("%s call change\n", calleelevel->frame->label->Name().c_str());
         }
       }
     }
@@ -660,17 +657,55 @@ TR::ExpAndTy OpExp::Translate(S::Table<E::EnvEntry> *venv,
           );
           return TR::ExpAndTy(exp, TY::IntTy::Instance());
         case LT_OP:
-          relop = T::LT_OP;
-          break;
+          exp = new TR::ExExp(
+            F::externalCall(
+              level->frame,
+              new T::NameExp(TEMP::NamedLabel("stringLess")),
+              new T::ExpList(leftexpty.exp->UnEx(), new T::ExpList(rightexpty.exp->UnEx(), nullptr))
+            )
+          );
+          return TR::ExpAndTy(exp, TY::IntTy::Instance());
         case LE_OP:
-          relop = T::LE_OP;
-          break;
+          exp = new TR::ExExp(
+            F::externalCall(
+              level->frame,
+              new T::NameExp(TEMP::NamedLabel("not")),
+              new T::ExpList(
+                F::externalCall(
+                  level->frame,
+                  new T::NameExp(TEMP::NamedLabel("stringGreater")),
+                  new T::ExpList(leftexpty.exp->UnEx(), new T::ExpList(rightexpty.exp->UnEx(), nullptr))
+                ),
+                nullptr
+              )
+            )
+          );
+          return TR::ExpAndTy(exp, TY::IntTy::Instance());
         case GT_OP:
-          relop = T::GT_OP;
-          break;
+          exp = new TR::ExExp(
+            F::externalCall(
+              level->frame,
+              new T::NameExp(TEMP::NamedLabel("stringGreater")),
+              new T::ExpList(leftexpty.exp->UnEx(), new T::ExpList(rightexpty.exp->UnEx(), nullptr))
+            )
+          );
+          return TR::ExpAndTy(exp, TY::IntTy::Instance());
         case GE_OP:
-          relop = T::GE_OP;
-          break;
+          exp = new TR::ExExp(
+            F::externalCall(
+              level->frame,
+              new T::NameExp(TEMP::NamedLabel("not")),
+              new T::ExpList(
+                F::externalCall(
+                  level->frame,
+                  new T::NameExp(TEMP::NamedLabel("stringLess")),
+                  new T::ExpList(leftexpty.exp->UnEx(), new T::ExpList(rightexpty.exp->UnEx(), nullptr))
+                ),
+                nullptr
+              )
+            )
+          );
+          return TR::ExpAndTy(exp, TY::IntTy::Instance());
       default:
         break;
       }
@@ -1112,7 +1147,8 @@ TR::ExpAndTy ForExp::Translate(S::Table<E::EnvEntry> *venv,
   if (!highty->IsSameType(TY::IntTy::Instance())) {
     errormsg.Error(this->pos, "for exp's range type is not integer");
   }
-  TR::Access *i_access = TR::Access::AllocLocal(level, true);
+  // printf("forexp %d\n", this->escape);
+  TR::Access *i_access = TR::Access::AllocLocal(level, this->escape);
   venv->Enter(this->var, new E::VarEntry(i_access, TY::IntTy::Instance(), false));
   tenv->Enter(this->var, TY::IntTy::Instance());
 
@@ -1481,8 +1517,7 @@ TR::Exp *VarDec::Translate(S::Table<E::EnvEntry> *venv, S::Table<TY::Ty> *tenv,
       }
     }
   }
-
-  TR::Access *access = TR::Access::AllocLocal(level, true);
+  TR::Access *access = TR::Access::AllocLocal(level, this->escape);
 
   venv->Enter(this->var, new E::VarEntry(access, varty, false));
 
